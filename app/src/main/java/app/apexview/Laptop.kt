@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -82,6 +83,20 @@ private fun TimingTower(app: AppState, timing: SessionTiming) {
     val onTop = app.tiles.firstOrNull { it.id == app.bigTileIdForUi }?.channel?.racingNumber?.toString()
 
     Column(Modifier.fillMaxSize().padding(start = 12.dp, end = 6.dp, top = 8.dp)) {
+        // An onboard is up top: one tap back to the broadcast it replaced.
+        app.laptopReturnChannel?.let { channel ->
+            Row(
+                Modifier.pressable { app.returnToBroadcast() }.padding(start = 4.dp, top = 4.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.Icon(
+                    androidx.compose.material.icons.Icons.Rounded.ArrowBackIosNew, null,
+                    tint = Ink.primary, modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Back to ${broadcastName(channel)}", style = Type.headline)
+            }
+        }
         TowerHeader(timing)
         LazyColumn {
             items(rows, key = { it.first }) { (number, state) ->
@@ -191,4 +206,9 @@ fun LaptopPrompt(app: AppState) {
             }
         }
     }
+}
+
+/** "F1 LIVE" as "F1 Live", "INTERNATIONAL" as "International". */
+private fun broadcastName(channel: Channel) = channel.title.split(" ").joinToString(" ") { word ->
+    if (word.length <= 2) word.uppercase() else word.lowercase().replaceFirstChar { it.uppercase() }
 }

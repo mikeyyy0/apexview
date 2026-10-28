@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older: back up settings and layouts, never the F1 TV sign-in. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="auth.xml" />
+    <exclude domain="root" path="app_webview/" />
+</full-backup-content>

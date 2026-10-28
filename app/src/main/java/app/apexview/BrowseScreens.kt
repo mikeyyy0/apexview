@@ -759,8 +759,13 @@ private fun PickHero(app: AppState, pick: Pick) {
                 PrimaryButton(if (item.live) "Watch live" else "Play", Icons.Rounded.PlayArrow) { app.watch(item) }
                 app.weekendOf(item)?.let { w -> SecondaryButton("Weekend") { app.open(Screen.Weekend(w)) } }
             }
-            weekend != null -> PrimaryButton(if (weekend.startMs > System.currentTimeMillis()) "Schedule" else "Sessions") {
-                app.open(Screen.Weekend(weekend))
+            weekend != null -> {
+                val ahead = weekend.startMs > System.currentTimeMillis() || app.nextSession(weekend) != null
+                PrimaryButton(if (weekend.startMs > System.currentTimeMillis()) "Schedule" else "Sessions") {
+                    app.open(Screen.Weekend(weekend))
+                }
+                // Sessions still to come: a way to be reminded of them.
+                if (ahead) SecondaryButton(if (app.remindersOn) "Reminders on" else "Notify me") { app.openReminders() }
             }
         }
     }

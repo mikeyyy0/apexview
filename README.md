@@ -88,6 +88,8 @@ line, the track ribbon).
 
 Apexview talks only to F1's servers (with your own sign-in), MultiViewer's public circuit data,
 and GitHub to check for updates. There are no analytics and nothing is uploaded in the background.
+Your F1 TV sign-in stays on your phone: it isn't included in Android backups or phone-to-phone
+transfers, and it's stripped from crash reports.
 If the app crashes, the next launch offers to open a GitHub issue with the error filled in; it's
 only sent if you submit it.
 

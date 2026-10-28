@@ -439,8 +439,14 @@ class AppState(
     var mapStatus by mutableStateOf<String?>(null)
         private set
     /** Edge by default; the last style picked is remembered. */
-    var mapMode by mutableStateOf(prefs.getString(PREF_MAP_MODE, null)?.let { runCatching { MapMode.valueOf(it) }.getOrNull() } ?: MapMode.EDGE)
+    var mapMode by mutableStateOf(savedMapMode())
         private set
+
+    private fun savedMapMode() =
+        prefs.getString(PREF_MAP_MODE, null)?.let { runCatching { MapMode.valueOf(it) }.getOrNull() } ?: MapMode.EDGE
+
+    /** Videos that aren't sessions (press conferences, shows, highlights): they start with the map off. */
+    private val notSessions = mutableSetOf<Long>()
     val mapPanel = MapPanel()
     /** The track map's window in laptop mode, below the hinge; placed and remembered on its own. */
     val laptopMapPanel = MapPanel()
@@ -853,6 +859,7 @@ class AppState(
     private suspend fun channelsOf(contentId: Long): List<Channel> = channelsByContent[contentId] ?: run {
         val video = api.contentVideo(contentId)
         video.session?.let { sessionRefs[contentId] = it }
+        if (!video.isSession) notSessions += contentId
         video.channels.ifEmpty { listOf(Channel("Main feed", null, isDefault = true)) }
             .also { channelsByContent[contentId] = it }
     }
@@ -1019,6 +1026,9 @@ class AppState(
             val joinAt = leaderTile()?.takeIf { it.contentId == contentId && !it.feed.player.isCurrentMediaItemLive }
                 ?.feed?.player?.currentPosition
             val first = tiles.isEmpty()
+            // A press conference or a show has no cars to follow: its map starts off, without
+            // touching the style saved for sessions.
+            if (first && pendingResume?.contentId != contentId) mapMode = if (contentId in notSessions) MapMode.OFF else savedMapMode()
             // A feed added while one fills the screen brings the whole layout back.
             focusTileId = null
             streams.forEach { (channel, stream) ->
@@ -1258,6 +1268,7 @@ class AppState(
             message = "No onboard for car $number in this session"
             return
         }
+        if (laptopActive) rememberBroadcast()
         tiles.firstOrNull { it.channel == channel }?.let {
             if (laptopActive) putOnTop(it) else raise(it)
             return
@@ -1971,6 +1982,43 @@ class AppState(
         bigTileId = tile.id
         layoutRequest++
     }
+
+    /** In laptop mode, the broadcast (F1 Live, International...) that was up top before an onboard. */
+    var laptopReturn by mutableStateOf<Pair<Int, Channel>?>(null)
+        private set
+
+    /** Notes the broadcast on top, once, as an onboard is about to replace it. */
+    private fun rememberBroadcast() {
+        val top = tiles.firstOrNull { it.id == bigTileId } ?: return
+        if (top.channel.racingNumber == null) laptopReturn = top.id to top.channel
+    }
+
+    /** The broadcast to offer going back to: only while an onboard is up top. */
+    val laptopReturnChannel: Channel?
+        get() = laptopReturn?.second?.takeIf { laptopActive && tiles.firstOrNull { it.id == bigTileId }?.channel?.racingNumber != null }
+
+    /**
+     * Back to the broadcast that was up top: its feed if it's still playing below, else the top
+     * feed switches back to it.
+     */
+    fun returnToBroadcast() {
+        val (tileId, channel) = laptopReturn ?: return
+        laptopReturn = null
+        val waiting = tiles.firstOrNull { it.id == tileId && it.channel == channel } ?: tiles.firstOrNull { it.channel == channel }
+        if (waiting != null) putOnTop(waiting)
+        else tiles.firstOrNull { it.id == bigTileId }?.let { switchFeed(it, channel) }
+    }
+
+    // Reminders asked for from home's Notify me: the calendar opens with its reminder settings up.
+    private var remindersAsked = false
+
+    fun openReminders() {
+        remindersAsked = true
+        open(Screen.Calendar)
+    }
+
+    /** True once after [openReminders]. */
+    fun takeRemindersRequest(): Boolean = remindersAsked.also { remindersAsked = false }
 
     /** The feed filling a narrow screen after a double-tap, if any. */
     var focusTileId by mutableStateOf<Int?>(null)

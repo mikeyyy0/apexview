@@ -52,7 +52,7 @@ fun CalendarScreen(app: AppState) {
         derivedStateOf { if (list.firstVisibleItemIndex > 0) Float.MAX_VALUE else list.firstVisibleItemScrollOffset.toFloat() }
     }
     val span = with(density) { 50.dp.toPx() }
-    var remindersOpen by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var remindersOpen by remember { androidx.compose.runtime.mutableStateOf(app.takeRemindersRequest()) }
     val year = app.calendarSeason
     val current = year == app.season
     val classic = year < AppState.FIRST_WEEKEND_SEASON

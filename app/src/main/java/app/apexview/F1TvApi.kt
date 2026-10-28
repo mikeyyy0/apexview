@@ -21,7 +21,8 @@ data class Channel(
     val teamColor: Int? = null,
 )
 
-data class VideoInfo(val title: String, val channels: List<Channel>, val session: SessionRef?)
+/** [isSession]: a practice, qualifying, sprint or race, rather than a show, press conference or highlights. */
+data class VideoInfo(val title: String, val channels: List<Channel>, val session: SessionRef?, val isSession: Boolean = true)
 
 /** A race weekend in the season calendar. */
 data class WeekendInfo(
@@ -443,7 +444,8 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
             .getJSONArray("containers")
         if (containers.length() == 0) throw IOException("F1 TV has no video for $contentId")
 
-        val meta = containers.getJSONObject(0).getJSONObject("metadata")
+        val container = containers.getJSONObject(0)
+        val meta = container.getJSONObject("metadata")
         val streams = meta.optJSONArray("additionalStreams")
         val channels = (0 until (streams?.length() ?: 0)).map { i ->
             val stream = streams!!.getJSONObject(i)
@@ -461,7 +463,10 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
             )
         }
         val title = text(meta, "title").ifEmpty { "Content $contentId" }
-        VideoInfo(title, channels, sessionRef(meta, title))
+        // As on the weekend page: sessions sit in a live package; shows filed as sessions don't.
+        val isSession = meta.optJSONObject("emfAttributes")?.optString("VideoType") == "meetingSession" &&
+            packageNames(container).any { it.endsWith("_Live") }
+        VideoInfo(title, channels, sessionRef(meta, title), isSession)
     }
 
     /** The keys F1's timing archive files this session under, from the video's event metadata. */
