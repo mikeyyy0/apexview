@@ -656,6 +656,10 @@ private fun TileView(app: AppState, tile: Tile) {
             )
         }
 
+        if (tile.feed.problem == null && !tile.coolingOff) {
+            BufferingRing(tile.feed, Modifier.align(Alignment.Center))
+        }
+
         tile.feed.problem?.let { problem ->
             Text(
                 problem,
@@ -1068,5 +1072,32 @@ private fun MapSheet(app: AppState) {
                 }
             }
         }
+    }
+}
+
+/** How long a feed waits on the stream before the ring shows: the quick skips that line feeds up stay unmarked. */
+private const val BUFFERING_SHOW_MS = 600L
+
+/** A thin spinning ring while [feed] waits on the stream for longer than a moment. */
+@Composable
+private fun BufferingRing(feed: FeedPlayer, modifier: Modifier) {
+    var shown by remember(feed) { mutableStateOf(false) }
+    LaunchedEffect(feed, feed.buffering) {
+        if (feed.buffering) {
+            delay(BUFFERING_SHOW_MS)
+            shown = true
+        } else {
+            shown = false
+        }
+    }
+    val alpha by animateFloatAsState(if (shown) 1f else 0f, tween(Motion.SCREEN_MS, easing = EaseOut), label = "buffering")
+    if (alpha > 0f) {
+        androidx.compose.material3.CircularProgressIndicator(
+            modifier = modifier.size(36.dp).graphicsLayer { this.alpha = alpha },
+            color = Ink.primary,
+            // A faint dark track, so the ring still reads over a bright sky.
+            trackColor = Color.Black.copy(alpha = 0.3f),
+            strokeWidth = 2.5.dp,
+        )
     }
 }

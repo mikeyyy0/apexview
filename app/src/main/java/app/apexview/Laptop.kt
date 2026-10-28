@@ -59,7 +59,21 @@ private val cell = TextStyle(color = Color.White, fontSize = 13.sp, fontFeatureS
 fun LaptopPanel(app: AppState, timing: SessionTiming?, modifier: Modifier) {
     // The tower takes the left; the map is a window of its own over the right (see Viewer).
     Row(modifier.background(Ink.background)) {
-        Box(Modifier.weight(AppState.LAPTOP_TOWER_SHARE).fillMaxHeight()) {
+        Column(Modifier.weight(AppState.LAPTOP_TOWER_SHARE).fillMaxHeight()) {
+            // An onboard is up top: one tap back to the broadcast it replaced.
+            app.laptopReturnChannel?.let { channel ->
+                Row(
+                    Modifier.pressable { app.returnToBroadcast() }.padding(start = 16.dp, top = 12.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.Icon(
+                        androidx.compose.material.icons.Icons.Rounded.ArrowBackIosNew, null,
+                        tint = Ink.primary, modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Back to ${broadcastName(channel)}", style = Type.headline)
+                }
+            }
             if (timing != null && timing.laps.isNotEmpty()) TimingTower(app, timing)
             else Text(app.mapStatus ?: "No timing for this session.", style = Type.footnote, modifier = Modifier.padding(20.dp))
         }
@@ -83,20 +97,6 @@ private fun TimingTower(app: AppState, timing: SessionTiming) {
     val onTop = app.tiles.firstOrNull { it.id == app.bigTileIdForUi }?.channel?.racingNumber?.toString()
 
     Column(Modifier.fillMaxSize().padding(start = 12.dp, end = 6.dp, top = 8.dp)) {
-        // An onboard is up top: one tap back to the broadcast it replaced.
-        app.laptopReturnChannel?.let { channel ->
-            Row(
-                Modifier.pressable { app.returnToBroadcast() }.padding(start = 4.dp, top = 4.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                androidx.compose.material3.Icon(
-                    androidx.compose.material.icons.Icons.Rounded.ArrowBackIosNew, null,
-                    tint = Ink.primary, modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Back to ${broadcastName(channel)}", style = Type.headline)
-            }
-        }
         TowerHeader(timing)
         LazyColumn {
             items(rows, key = { it.first }) { (number, state) ->

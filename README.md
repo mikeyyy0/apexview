@@ -52,7 +52,7 @@ account.
 
 Android 10 or newer.
 
-Apexview checks for a new release once a day when it opens and offers to update itself (Android asks you to confirm the install, and the first time, to allow Apexview to install updates). Settings has a Check for updates button too. A fork can point its updates at its own releases with `UPDATE_REPO` in `app/build.gradle.kts`.
+Apexview checks for a new release each time it opens and offers to update itself (Android asks you to confirm the install, and the first time, to allow Apexview to install updates). Settings has a Check for updates button too. A fork can point its updates at its own releases with `UPDATE_REPO` in `app/build.gradle.kts`.
 
 ## Build it yourself
 

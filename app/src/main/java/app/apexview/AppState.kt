@@ -1,5 +1,6 @@
 package app.apexview
 
+import androidx.media3.common.C
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -286,13 +287,28 @@ class AppState(
                 focusTileId != null -> tile.id == focusTileId
                 else -> onCanvas(tile) && tiles.none { it !== tile && it.z > tile.z && covers(it, tile) }
             }
+            // Laptop mode: the feed that was up top last keeps its picture going out of sight, so
+            // going back to it is instant rather than a fresh ~4 MB chunk. Not once the phone is warm.
+            val warm = !visible && !browsing && !inPip && laptopActive && tile.id == previousTopId &&
+                thermal < android.os.PowerManager.THERMAL_STATUS_MODERATE
+            if (warm) {
+                tile.coolingOff = false
+                tile.feed.keepVideo()
+                return@forEach
+            }
             val cooling = thermal >= android.os.PowerManager.THERMAL_STATUS_CRITICAL && tile !== main
             tile.coolingOff = visible && cooling
-            // The pop-out is small whatever the tile's size on the canvas.
-            val (w, h) = if (inPip) 640f to 360f else tile.w to tile.h
+            val (w, h) = when {
+                // The pop-out is small whatever the tile's size on the canvas.
+                inPip -> 640f to 360f
+                else -> tile.w to tile.h
+            }
             tile.feed.setVideo(visible && !cooling, (w * scale).toInt(), (h * scale).toInt())
         }
     }
+
+    /** In laptop mode, the feed that was up top before the one there now. */
+    private var previousTopId: Int? = null
 
     private fun onCanvas(t: Tile) =
         canvasW <= 0f || (t.x < canvasW && t.x + t.w > 0f && t.y < canvasH && t.y + t.h > 0f)
@@ -374,7 +390,8 @@ class AppState(
     var tileMenu by mutableStateOf<Tile?>(null)
         private set
     /** The feed in the big slot of the main + strip layout; double-tap changes it. */
-    private var bigTileId: Int? = null
+    // State, so what depends on which feed is up top in laptop mode (the way back) redraws.
+    private var bigTileId by mutableStateOf<Int?>(null)
     /** After a swap, the tile offering its audio for a few seconds. */
     var audioHint by mutableStateOf<Tile?>(null)
         private set
@@ -597,15 +614,19 @@ class AppState(
                 api.prepare()
                 val calendar = async { api.calendar(season) }
                 val live = async { runCatching { api.liveNow() }.getOrDefault(emptyList()) }
+                // Each list is swapped in one go, after both answers: home loads twice at start-up
+                // (once on opening, again after sign-in), and clearing before the wait let both
+                // loads fill the list, every weekend twice.
+                val (newWeekends, newLive) = calendar.await() to live.await()
                 weekends.clear()
-                weekends.addAll(calendar.await())
+                weekends.addAll(newWeekends)
                 liveNow.clear()
-                liveNow.addAll(live.await())
+                liveNow.addAll(newLive)
                 homeError = null
                 latestWeekend()?.let(::loadWeekend)
                 featuredWeekend()?.takeIf { it != latestWeekend() }?.let(::loadWeekend)
                 launch { runCatching { api.home() }.onSuccess { homePage = it } }
-                if (lastYearRaces.isEmpty()) launch { runCatching { api.raceReplays(season - 1) }.onSuccess { lastYearRaces.addAll(it) } }
+                if (lastYearRaces.isEmpty()) launch { runCatching { api.raceReplays(season - 1) }.onSuccess { lastYearRaces.clear(); lastYearRaces.addAll(it) } }
             } catch (e: Exception) {
                 homeError = "Couldn't load F1 TV: ${e.message}"
             }
@@ -762,6 +783,9 @@ class AppState(
         homePage?.rows?.firstOrNull { it.tag == CatalogRow.ARCHIVE }?.items?.filter(::fresh)?.takeIf { it.isNotEmpty() }?.let { races ->
             add("From the archive", races[(now / DAY_MS % races.size).toInt()])
         }
+        // The next weekend's schedule always makes it, even after a long build-up.
+        val schedule = picks.firstOrNull { it.weekend != null }
+        if (schedule != null && picks.indexOf(schedule) >= MAX_PICKS) return picks.take(MAX_PICKS - 1) + schedule
         return picks.take(MAX_PICKS)
     }
 
@@ -1059,7 +1083,7 @@ class AppState(
         }
     }
 
-    private fun newFeed(stream: PlayInfo) = FeedPlayer(
+    private fun newFeed(stream: PlayInfo, startMs: Long = C.TIME_UNSET) = FeedPlayer(
         context, stream,
         ascendon = api.ascendon.orEmpty(),
         entitlement = api.entitlement.orEmpty(),
@@ -1067,6 +1091,7 @@ class AppState(
         forceL3 = settings.softwareDrm,
         subtitles = settings.subtitles,
         commentary = settings.commentary,
+        startMs = startMs,
     )
 
     /**
@@ -1327,17 +1352,25 @@ class AppState(
     fun switchFeed(tile: Tile, channel: Channel) {
         tileMenu = null
         if (channel == tile.channel) return
+        // The feed up top in laptop mode switched from its own menu: offer the way back too.
+        if (laptopActive && tile.id == bigTileId) rememberBroadcast()
         task("Switching to ${channel.title}") {
             val failures = mutableListOf<String>()
             val stream = streamFor(tile.contentId, channel, failures)
             val old = tile.feed
-            val feed = newFeed(stream)
+            // Start where the tile was (switching the leader from the start once pulled every
+            // other feed back with it), allowing for the time a feed takes to start while playing,
+            // and from the beginning of that video chunk: starting mid-chunk means decoding every
+            // frame from the chunk's start first, measured at 3 to 4 s against under 1 s from its
+            // start. The sync loop then brings it level in one short skip.
+            val start = if (old.player.isCurrentMediaItemLive) C.TIME_UNSET else {
+                val target = old.player.currentPosition + if (playing) FeedPlayer.typicalStartMs else 0L
+                val chunk = FeedPlayer.chunkMs
+                if (chunk > 0) target / chunk * chunk else target
+            }
+            val feed = newFeed(stream, start)
             feed.setAudible(tile.audible && !mutedAll)
             feed.player.playWhenReady = playing
-            // Start where the tile was. This used to happen only when the tile wasn't the leader;
-            // switching the leader (as a car tapped on the map could) started it from the
-            // beginning and the sync loop pulled every other feed back with it.
-            if (!old.player.isCurrentMediaItemLive) feed.player.seekTo(old.player.currentPosition)
             tile.feed = feed
             tile.channel = channel
             old.release()
@@ -1914,6 +1947,9 @@ class AppState(
      */
     fun doubleTap(tile: Tile) {
         when {
+            // Laptop mode shows one feed: a double-tap on an onboard goes back to the broadcast.
+            // (Swapping would trade places with a feed waiting off screen and leave the top black.)
+            laptopActive -> if (laptopReturnChannel != null) returnToBroadcast()
             focusTileId != null -> {
                 focusTileId = null
                 layoutRequest++
@@ -1981,8 +2017,11 @@ class AppState(
 
     /** In laptop mode, puts [tile] in the one spot above the hinge. */
     private fun putOnTop(tile: Tile) {
+        if (bigTileId != tile.id) previousTopId = bigTileId
         bigTileId = tile.id
         layoutRequest++
+        // Its picture back now, not at the next half-second check.
+        applyVideoBudget()
     }
 
     /** In laptop mode, the broadcast (F1 Live, International...) that was up top before an onboard. */
@@ -1995,16 +2034,28 @@ class AppState(
         if (top.channel.racingNumber == null) laptopReturn = top.id to top.channel
     }
 
+    /**
+     * The broadcast to go back to while an onboard is up top: the one it replaced, else (a session
+     * resumed on an onboard) a broadcast feed waiting below, else the session's main feed.
+     */
+    private fun broadcastBehind(): Pair<Int, Channel>? {
+        val top = tiles.firstOrNull { it.id == bigTileId }?.takeIf { laptopActive && it.channel.racingNumber != null } ?: return null
+        laptopReturn?.let { return it }
+        tiles.filter { it.channel.racingNumber == null }.sortedByDescending { it.audible }.firstOrNull()?.let { return it.id to it.channel }
+        val main = channelsByContent[top.contentId]?.let { list -> list.firstOrNull { it.isDefault } ?: list.firstOrNull { it.racingNumber == null } }
+        return main?.let { top.id to it }
+    }
+
     /** The broadcast to offer going back to: only while an onboard is up top. */
     val laptopReturnChannel: Channel?
-        get() = laptopReturn?.second?.takeIf { laptopActive && tiles.firstOrNull { it.id == bigTileId }?.channel?.racingNumber != null }
+        get() = broadcastBehind()?.second
 
     /**
      * Back to the broadcast that was up top: its feed if it's still playing below, else the top
      * feed switches back to it.
      */
     fun returnToBroadcast() {
-        val (tileId, channel) = laptopReturn ?: return
+        val (tileId, channel) = broadcastBehind() ?: return
         laptopReturn = null
         val waiting = tiles.firstOrNull { it.id == tileId && it.channel == channel } ?: tiles.firstOrNull { it.channel == channel }
         if (waiting != null) putOnTop(waiting)

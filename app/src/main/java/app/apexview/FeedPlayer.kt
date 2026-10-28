@@ -15,6 +15,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -24,6 +25,8 @@ import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
 import androidx.media3.exoplayer.drm.UnsupportedDrmException
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 
 /**
  * One feed: its own ExoPlayer and its own Widevine session, licensed by F1's license server
@@ -41,6 +44,8 @@ class FeedPlayer(
     subtitles: Boolean,
     /** ISO 639 code, such as "en", for the commentary track. */
     commentary: String,
+    /** Where a replay starts (ms), set before loading so nothing loads for the wrong spot. */
+    startMs: Long = C.TIME_UNSET,
 ) {
     var status by mutableStateOf("Starting")
         private set
@@ -49,6 +54,8 @@ class FeedPlayer(
 
     /** Distance from the leading tile in ms, set by the sync loop. Null for the leader. */
     var driftMs: Long? = null
+
+    private val createdAt = android.os.SystemClock.elapsedRealtime()
 
     private var state = "Starting"
     private var size = ""
@@ -60,6 +67,9 @@ class FeedPlayer(
     @Volatile private var error: String? = null
     /** Why this feed isn't playing, in plain words, for the tile to show. Null while it's fine. */
     var problem by mutableStateOf<String?>(null)
+        private set
+    /** Waiting on the stream: starting, or stalled until more arrives. */
+    var buffering by mutableStateOf(true)
         private set
 
     // Written on the playback thread when the DRM session opens.
@@ -101,7 +111,13 @@ class FeedPlayer(
 
         val sources = DefaultMediaSourceFactory(http).setDrmSessionManagerProvider { drmManager }
 
-        player = ExoPlayer.Builder(context).setMediaSourceFactory(sources).build()
+        // Starts once a second of picture is in rather than the default 2.5 (2 rather than 5 after
+        // a stall): F1's chunks are almost 6 s each, so a feed starting mid-chunk otherwise waits
+        // for the next one too.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS, DefaultLoadControl.DEFAULT_MAX_BUFFER_MS, 1_000, 2_000)
+            .build()
+        player = ExoPlayer.Builder(context).setMediaSourceFactory(sources).setLoadControl(loadControl).build()
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitles)
             .setPreferredAudioLanguage(commentary)
@@ -114,6 +130,13 @@ class FeedPlayer(
                     Player.STATE_READY -> "Playing"
                     Player.STATE_ENDED -> "Ended"
                     else -> "Stopped"
+                }
+                buffering = playbackState == Player.STATE_BUFFERING
+                if (playbackState == Player.STATE_READY && !started) {
+                    started = true
+                    // A rolling average of how long feeds take to start, for the next one.
+                    val took = android.os.SystemClock.elapsedRealtime() - createdAt
+                    if (took in 200..8_000) typicalStartMs = (typicalStartMs * 2 + took) / 3
                 }
                 refresh()
             }
@@ -144,6 +167,20 @@ class FeedPlayer(
                 refresh()
             }
 
+            override fun onLoadCompleted(
+                eventTime: AnalyticsListener.EventTime,
+                loadEventInfo: LoadEventInfo,
+                mediaLoadData: MediaLoadData,
+            ) {
+                // The length of the stream's video chunks, for where the next feed should start.
+                // (F1's HLS reports its video chunks as the default track type, not video.)
+                if (mediaLoadData.dataType == C.DATA_TYPE_MEDIA &&
+                    mediaLoadData.trackType != C.TRACK_TYPE_AUDIO && mediaLoadData.trackType != C.TRACK_TYPE_TEXT) {
+                    val chunk = mediaLoadData.mediaEndTimeMs - mediaLoadData.mediaStartTimeMs
+                    if (chunk in 1_000..12_000) chunkMs = chunk
+                }
+            }
+
             override fun onDrmKeysLoaded(eventTime: AnalyticsListener.EventTime) {
                 licensed = true
                 refresh()
@@ -151,17 +188,17 @@ class FeedPlayer(
         })
 
         val isHls = stream.url.substringBefore('?').endsWith(".m3u8") || "HLS" in stream.streamType
-        player.setMediaItem(
-            MediaItem.Builder()
-                .setUri(stream.url)
-                .setMimeType(if (isHls) MimeTypes.APPLICATION_M3U8 else MimeTypes.APPLICATION_MPD)
-                .build()
-        )
+        val item = MediaItem.Builder()
+            .setUri(stream.url)
+            .setMimeType(if (isHls) MimeTypes.APPLICATION_M3U8 else MimeTypes.APPLICATION_MPD)
+            .build()
+        if (startMs == C.TIME_UNSET) player.setMediaItem(item) else player.setMediaItem(item, startMs)
         player.playWhenReady = true
         player.prepare()
     }
 
     private var videoOn = true
+    private var started = false
     private var viewW = 0
     private var viewH = 0
 
@@ -183,6 +220,14 @@ class FeedPlayer(
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !on)
             .setViewportSize(w, h, false)
             .build()
+    }
+
+    /**
+     * Keeps the picture going at the size it already has: changing size would pick another
+     * rendition and stall the feed, sound included, while it loads.
+     */
+    fun keepVideo() {
+        if (!videoOn) setVideo(true, viewW.takeIf { it > 1 } ?: 1920, viewH.takeIf { it > 1 } ?: 1080)
     }
 
     fun setAudible(audible: Boolean) {
@@ -253,5 +298,12 @@ class FeedPlayer(
         }
         val root = chain.last()
         return "${root.javaClass.simpleName}: ${root.message}"
+    }
+
+    companion object {
+        /** How long a new feed has been taking to start playing (ms), learned as feeds start. */
+        @Volatile var typicalStartMs = 2_000L
+        /** How long the streams' video chunks run (ms), learned from loading; 0 until known. */
+        @Volatile var chunkMs = 0L
     }
 }
