@@ -1347,6 +1347,7 @@ class AppState(
 
     /** Lays the feeds out afresh in [mode]. */
     fun chooseLayout(mode: LayoutMode) {
+        mapGrabbed = false
         layoutMode = mode
         handPlaced = false
         layoutRequest++
@@ -1529,6 +1530,7 @@ class AppState(
     }
 
     fun chooseMapMode(mode: MapMode) {
+        mapGrabbed = false
         if (mode == mapMode) return
         mapMode = mode
         prefs.edit().putString(PREF_MAP_MODE, mode.name).apply()

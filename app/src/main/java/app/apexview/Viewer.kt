@@ -353,31 +353,38 @@ private fun Modifier.mapGestures(app: AppState, density: androidx.compose.ui.uni
     // The track map window: the regular one in Track style, or laptop mode's own.
     val window = app.laptopActive || app.mapMode == MapMode.TRACK
     if (!app.arranging || app.mapLocked || !window || timing == null) return this
-    return pointerInput(timing, app.arranging, app.mapLocked, app.laptopActive) {
+    // Keyed on the circuit, not the timing: live timing is replaced every couple of seconds, and
+    // restarting this mid-gesture used to leave the map "grabbed", so feeds wouldn't move again.
+    return pointerInput(timing.circuitKey, timing.outline.size, app.arranging, app.mapLocked, app.laptopActive) {
         val margin = mapMarginPx(density)
         val reach = with(density) { 22.dp.toPx() }
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-            if (!mapLineTouched(app, timing, down.position.x, down.position.y, margin, reach)) return@awaitEachGesture
-            // From the first touch on the line, the feeds underneath ignore this finger.
+            val now = app.timing ?: return@awaitEachGesture
+            if (!mapLineTouched(app, now, down.position.x, down.position.y, margin, reach)) return@awaitEachGesture
+            // From the first touch on the line, the feeds underneath ignore this finger; however
+            // the gesture ends (lifted, cancelled, or this handler replaced), they listen again.
             app.mapGrabbed = true
             var dragging = false
-            var travel = Offset.Zero
-            do {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                val pan = event.calculatePan()
-                val zoom = event.calculateZoom()
-                val turn = event.calculateRotation()
-                if (!dragging) {
-                    travel += pan
-                    dragging = travel.getDistance() > viewConfiguration.touchSlop || zoom != 1f || turn != 0f
-                }
-                if (dragging) {
-                    app.arrangeMap(pan, zoom, turn)
-                    event.changes.forEach { it.consume() }
-                }
-            } while (event.changes.any { it.pressed })
-            app.mapGrabbed = false
+            try {
+                var travel = Offset.Zero
+                do {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val pan = event.calculatePan()
+                    val zoom = event.calculateZoom()
+                    val turn = event.calculateRotation()
+                    if (!dragging) {
+                        travel += pan
+                        dragging = travel.getDistance() > viewConfiguration.touchSlop || zoom != 1f || turn != 0f
+                    }
+                    if (dragging) {
+                        app.arrangeMap(pan, zoom, turn)
+                        event.changes.forEach { it.consume() }
+                    }
+                } while (event.changes.any { it.pressed })
+            } finally {
+                app.mapGrabbed = false
+            }
             if (dragging) app.storeMapPanel()
         }
     }
