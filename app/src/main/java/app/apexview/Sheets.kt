@@ -265,6 +265,14 @@ fun SettingsScreen(app: AppState) {
         }
         item {
             Group(
+                "Live races",
+                footer = "With 6 laps to go in a live Grand Prix, a note offers to open F1's Driver of the Day vote.",
+            ) {
+                SwitchRow("Driver of the Day reminder", s.votePrompt, s::updateVotePrompt)
+            }
+        }
+        item {
+            Group(
                 "Track map",
                 footer = "How far the map runs behind the picture. F1 stamps its video about 7 seconds after its timing data.",
             ) {

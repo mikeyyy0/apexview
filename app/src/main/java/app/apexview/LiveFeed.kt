@@ -68,6 +68,10 @@ class LiveTimingFeed(
     private val controlLines = StringBuilder()
     private var streamStart: Long? = null
     private var sessionType = ""
+    private var sessionName = ""
+    /** The race's lap count (CurrentLap, TotalLaps); F1 sends it for races only. */
+    private var currentLap: Int? = null
+    private var totalLaps: Int? = null
     private var sessionPath = ""
     private val radio = mutableListOf<RadioClip>()
 
@@ -236,10 +240,15 @@ class LiveTimingFeed(
             "DriverList" -> (data as? JSONObject)?.let { merge(driverList, it) }
             "SessionInfo" -> (data as? JSONObject)?.let { info ->
                 info.optString("Type").takeIf { it.isNotEmpty() }?.let { sessionType = it }
+                info.optString("Name").takeIf { it.isNotEmpty() }?.let { sessionName = it }
                 info.optString("Path").takeIf { it.isNotEmpty() }?.let { sessionPath = it }
                 info.optString("GmtOffset").takeIf { it.isNotEmpty() }?.let { gmtOffset = it }
             }
             "TeamRadio" -> (data as? JSONObject)?.let { archive.addRadio(it, radio) }
+            "LapCount" -> (data as? JSONObject)?.let { count ->
+                if (count.has("CurrentLap")) currentLap = count.optInt("CurrentLap")
+                if (count.has("TotalLaps")) totalLaps = count.optInt("TotalLaps")
+            }
             "TimingData" -> append(timingLines, start, utc, data)
             "TimingAppData" -> append(tyreLines, start, utc, data)
             "SessionStatus" -> append(statusLines, start, utc, data)
@@ -296,6 +305,7 @@ class LiveTimingFeed(
         val status = statusLines.toString()
         return SessionTiming(
             type = sessionType.ifEmpty { ref.title },
+            name = sessionName.ifEmpty { ref.title },
             drivers = archive.parseDrivers(driverList),
             tracks = built,
             states = states.states,
@@ -320,6 +330,8 @@ class LiveTimingFeed(
             radio = radio.sortedBy { it.utc },
             radioBase = LiveTimingArchive.BASE + sessionPath,
             tyres = tyres,
+            currentLap = currentLap,
+            totalLaps = totalLaps,
         )
     }
 
@@ -329,7 +341,7 @@ class LiveTimingFeed(
         private const val RS = "\u001e"
         private val TOPICS = listOf(
             "Heartbeat", "Position.z", "TimingData", "DriverList", "SessionInfo", "SessionStatus", "RaceControlMessages",
-            "TeamRadio", "TimingAppData", "TrackStatus",
+            "TeamRadio", "TimingAppData", "TrackStatus", "LapCount",
         )
         private const val REFRESH_MS = 2_000L
         // Lap states and timing cards are re-read every 10 s: the picture runs far enough behind

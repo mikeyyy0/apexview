@@ -21,12 +21,16 @@ class Settings(context: Context) {
         private set
     var showStats by mutableStateOf(prefs.getBoolean("showStats", false))
         private set
+    /** Live races: a note near the end offering to vote for Driver of the Day. */
+    var votePrompt by mutableStateOf(prefs.getBoolean("votePrompt", true))
+        private set
 
     fun updatePlatform(value: String) { platform = value; prefs.edit().putString("platform", value).apply() }
     fun updateSoftwareDrm(value: Boolean) { softwareDrm = value; prefs.edit().putBoolean("softwareDrm", value).apply() }
     fun updateSubtitles(value: Boolean) { subtitles = value; prefs.edit().putBoolean("subtitles", value).apply() }
     fun updateCommentary(value: String) { commentary = value; prefs.edit().putString("commentary", value).apply() }
     fun updateShowStats(value: Boolean) { showStats = value; prefs.edit().putBoolean("showStats", value).apply() }
+    fun updateVotePrompt(value: Boolean) { votePrompt = value; prefs.edit().putBoolean("votePrompt", value).apply() }
 
     companion object {
         /** F1 TV's commentary languages, by ISO 639-1 code. */

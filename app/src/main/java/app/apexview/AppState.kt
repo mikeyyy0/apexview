@@ -1174,6 +1174,7 @@ class AppState(
                     if (timingContentId == contentId) {
                         rememberStartLine(live)
                         showTiming(live)
+                        offerVote(contentId, live)
                         // A track traced live is kept, for the replay and the next session there.
                         if (!kept && key != null) feed.newOutline?.let { writeOutline(key, it); kept = true }
                     }
@@ -2104,6 +2105,53 @@ class AppState(
         audioHint = null
     }
 
+    // Driver of the Day: a note near the end of a live Grand Prix.
+
+    /** The note, showing. Once per race, and never with the setting off. */
+    var votePromptOpen by mutableStateOf(false)
+        private set
+    /** The first note ever also offers to turn them off, without a trip to Settings. */
+    var votePromptFirst by mutableStateOf(false)
+        private set
+
+    /** On each live update: 6 laps to go, or the race just finished, in a Grand Prix watched live. */
+    private fun offerVote(contentId: Long, live: SessionTiming) {
+        if (!settings.votePrompt || votePromptOpen || !live.isGrandPrix) return
+        if (prefs.getLong(PREF_VOTE_ASKED, 0L) == contentId) return
+        val lap = live.currentLap ?: return
+        val total = live.totalLaps ?: return
+        val finished = live.finishedUtc
+        // Laps to go as the lap board counts them: the lap under way is one of them.
+        if (finished == null && (lap <= 0 || total - lap + 1 > VOTE_LAPS_LEFT)) return
+        // Joined long after the flag: the vote has closed.
+        if (finished != null && System.currentTimeMillis() - finished > VOTE_OPEN_AFTER_MS) return
+        votePromptFirst = !prefs.getBoolean(PREF_VOTE_SEEN, false)
+        prefs.edit().putLong(PREF_VOTE_ASKED, contentId).putBoolean(PREF_VOTE_SEEN, true).apply()
+        votePromptOpen = true
+    }
+
+    /**
+     * Pops the race out, then opens F1's vote beside it. Opening another app from inside doesn't
+     * count as leaving, so the pop-out wouldn't happen by itself.
+     */
+    fun vote(activity: android.app.Activity) {
+        votePromptOpen = false
+        val open = Intent(Intent.ACTION_VIEW, Uri.parse(VOTE_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val popped = canPip && runCatching {
+            activity.enterPictureInPictureMode(pipParams(activity, pipTile(), canPip, playing))
+        }.getOrDefault(false)
+        if (!popped) return activity.startActivity(open)
+        scope.launch {
+            kotlinx.coroutines.delay(VOTE_OPEN_DELAY_MS)
+            activity.startActivity(open)
+        }
+    }
+
+    fun dismissVotePrompt(forGood: Boolean = false) {
+        votePromptOpen = false
+        if (forGood) settings.updateVotePrompt(false)
+    }
+
     // Pop-out (picture-in-picture) when leaving the app while watching.
 
     var inPip by mutableStateOf(false)
@@ -2171,6 +2219,7 @@ class AppState(
     fun stopAll() {
         // Closing the viewer keeps the spot, so Continue watching can bring it back.
         saveWatch()
+        votePromptOpen = false
         tiles.forEach { it.feed.release() }
         tiles.clear()
         sessions.clear()
@@ -2352,6 +2401,18 @@ class AppState(
         private const val PREF_SAVED_WATCH = "savedWatch"
         private const val PREF_MAP_MODE = "mapMode"
         private const val ACCOUNT_URL = "https://account.formula1.com/"
+        private const val VOTE_URL = "https://www.formula1.com/en/page/vote"
+        private const val PREF_VOTE_ASKED = "voteAskedFor"
+        private const val PREF_VOTE_SEEN = "voteSeen"
+        /**
+         * F1's own "vote now" posts in 2026 came with 8 to 15 laps to go, so by 6 the vote is
+         * surely open.
+         */
+        private const val VOTE_LAPS_LEFT = 6
+        /** Lets the pop-out get going before the browser opens over the screen. */
+        private const val VOTE_OPEN_DELAY_MS = 300L
+        /** F1 names its Driver of the Day soon after the flag; past this the vote is long shut. */
+        private const val VOTE_OPEN_AFTER_MS = 15 * 60_000L
         private const val FULL_NOTE = "4 feeds is the most this phone plays smoothly. Unpick one that's playing to make room."
     }
 }

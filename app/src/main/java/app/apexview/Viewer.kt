@@ -5,6 +5,7 @@ import android.os.Build
 import android.view.LayoutInflater
 import android.view.RoundedCorner
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -89,6 +90,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
@@ -324,6 +326,7 @@ fun ViewerScreen(app: AppState) {
         ) { BottomChrome(app, clearOf(cutouts, width, height - bottomBand, height)) }
 
         Messages(app, Modifier.zIndex(CHROME_Z + 1).align(Alignment.Center))
+        VotePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(Alignment.BottomEnd))
 
         // The explanation overlay, above everything. Shown once by itself, the first time.
         Box(Modifier.fillMaxSize().zIndex(CHROME_Z + 2)) {
@@ -1099,5 +1102,68 @@ private fun BufferingRing(feed: FeedPlayer, modifier: Modifier) {
             trackColor = Color.Black.copy(alpha = 0.3f),
             strokeWidth = 2.5.dp,
         )
+    }
+}
+
+private const val VOTE_PROMPT_MS = 60_000L
+
+/**
+ * Near the end of a live Grand Prix: a note in the corner offering F1's Driver of the Day vote.
+ * Nothing stops for it, and it goes by itself after a minute if left alone.
+ */
+@Composable
+private fun VotePrompt(app: AppState, modifier: Modifier) {
+    val activity = LocalContext.current as Activity
+    LaunchedEffect(app.votePromptOpen) {
+        if (app.votePromptOpen) {
+            delay(VOTE_PROMPT_MS)
+            app.dismissVotePrompt()
+        }
+    }
+    val fade = tween<Float>(Motion.SCREEN_MS, easing = EaseOut)
+    val slide = tween<IntOffset>(Motion.SCREEN_MS, easing = EaseOut)
+    // Clear of the playback controls while they're up.
+    val lift by animateDpAsState(
+        if (app.chromeVisible && !app.arranging) 110.dp else 0.dp,
+        tween(Motion.SCREEN_MS, easing = EaseOut),
+        label = "voteLift",
+    )
+    AnimatedVisibility(
+        app.votePromptOpen && !app.inPip,
+        modifier.padding(bottom = lift),
+        enter = fadeIn(fade) + slideInVertically(slide) { it / 3 },
+        exit = fadeOut(fade) + slideOutVertically(slide) { it / 3 },
+    ) {
+        Column(
+            Modifier
+                .navigationBarsPadding()
+                .padding(20.dp)
+                .widthIn(max = 360.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Ink.surface)
+                // A tap on the note itself shouldn't bring up the controls behind it.
+                .pointerInput(Unit) { detectTapGestures { } }
+                .padding(20.dp)
+        ) {
+            Row {
+                Column(Modifier.weight(1f)) {
+                    Text("Driver of the Day", style = Type.headline)
+                    Text(
+                        "Cast your vote on F1's site. The race keeps playing in a small window while you do.",
+                        style = Type.subhead,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                // Into the card's corner: the glyph's touch area is wider than its mark.
+                Glyph(Icons.Rounded.Close, "Not now", size = 20, modifier = Modifier.offset(12.dp, (-12).dp)) {
+                    app.dismissVotePrompt()
+                }
+            }
+            Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PrimaryButton("Vote") { app.vote(activity) }
+                // Only the first time; after that it's in Settings.
+                if (app.votePromptFirst) SecondaryButton("Disable this popup") { app.dismissVotePrompt(forGood = true) }
+            }
+        }
     }
 }

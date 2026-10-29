@@ -280,6 +280,11 @@ class SessionTiming(
     /** Where each marshal sector starts, for yellow flags in one sector. */
     val marshalSectors: List<Corner> = emptyList(),
     val flags: TrackFlags = TrackFlags.NONE,
+    /** "Race", "Sprint", "Qualifying"...: [type] says "Race" for a sprint too. */
+    val name: String = type,
+    /** Live only: the leader's lap and the race distance, from F1's lap counter. */
+    val currentLap: Int? = null,
+    val totalLaps: Int? = null,
 ) {
     val geometry = TrackGeometry(outline)
 
@@ -291,6 +296,9 @@ class SessionTiming(
     var startLine: Float? = null
 
     val isRace get() = type.contains("Race", ignoreCase = true)
+
+    /** The Grand Prix itself: Driver of the Day is voted on this one, not the sprint. */
+    val isGrandPrix get() = isRace && !name.contains("Sprint", ignoreCase = true)
 
     /** Flying-lap highlights only mean something in qualifying. */
     val showsPushLaps get() = type.contains("Qualifying", ignoreCase = true)
