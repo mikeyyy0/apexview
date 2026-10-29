@@ -14,6 +14,7 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.platform.AndroidUiDispatcher
 import android.content.Intent
+import androidx.browser.customtabs.CustomTabsIntent
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
@@ -2131,20 +2132,36 @@ class AppState(
     }
 
     /**
-     * Pops the race out, then opens F1's vote beside it. Opening another app from inside doesn't
-     * count as leaving, so the pop-out wouldn't happen by itself.
+     * Opens F1's vote as a Chrome sheet over part of the screen (up from the bottom, or down the
+     * side when unfolded), so the race plays on behind it without leaving the app. A browser that
+     * can't do sheets opens it full screen. Popping the race out and then opening the page, as
+     * 0.57 did, got the app flagged by Play Protect.
      */
     fun vote(activity: android.app.Activity) {
         votePromptOpen = false
-        val open = Intent(Intent.ACTION_VIEW, Uri.parse(VOTE_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        val popped = canPip && runCatching {
-            activity.enterPictureInPictureMode(pipParams(activity, pipTile(), canPip, playing))
-        }.getOrDefault(false)
-        if (!popped) return activity.startActivity(open)
-        scope.launch {
-            kotlinx.coroutines.delay(VOTE_OPEN_DELAY_MS)
-            activity.startActivity(open)
+        val screen = activity.resources.displayMetrics
+        val sheet = CustomTabsIntent.Builder()
+            .setInitialActivityHeightPx((screen.heightPixels * VOTE_SHEET_HEIGHT).toInt(), CustomTabsIntent.ACTIVITY_HEIGHT_ADJUSTABLE)
+            .setInitialActivityWidthPx((screen.widthPixels * VOTE_SHEET_WIDTH).toInt())
+            .setShowTitle(true)
+            .build()
+        sheet.intent.data = Uri.parse(VOTE_URL)
+        // Chrome only makes a sheet of a tab launched for a result; there's no result to read.
+        @Suppress("DEPRECATION")
+        runCatching {
+            activity.startActivityForResult(sheet.intent, VOTE_REQUEST)
+            voteSheetOpen = true
+        }.onFailure {
+            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(VOTE_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
+    }
+
+    /** F1's vote is open as a sheet over the app; on a narrow screen the feeds move up clear of it. */
+    var voteSheetOpen by mutableStateOf(false)
+        private set
+
+    fun onResumed() {
+        voteSheetOpen = false
     }
 
     fun dismissVotePrompt(forGood: Boolean = false) {
@@ -2409,8 +2426,10 @@ class AppState(
          * surely open.
          */
         private const val VOTE_LAPS_LEFT = 6
-        /** Lets the pop-out get going before the browser opens over the screen. */
-        private const val VOTE_OPEN_DELAY_MS = 300L
+        /** The vote sheet's share of the screen: its height from the bottom, its width at the side. */
+        private const val VOTE_SHEET_HEIGHT = 0.6f
+        const val VOTE_SHEET_WIDTH = 0.45f
+        private const val VOTE_REQUEST = 4057
         /** F1 names its Driver of the Day soon after the flag; past this the vote is long shut. */
         private const val VOTE_OPEN_AFTER_MS = 15 * 60_000L
         private const val FULL_NOTE = "4 feeds is the most this phone plays smoothly. Unpick one that's playing to make room."

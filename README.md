@@ -29,7 +29,7 @@ Made for the Pixel Fold's inner screen, and works on other Android phones and ta
 - **Pick up where you left off** across your last four sessions, layout included.
 - **Pop-out** picture-in-picture when you leave the app.
 - **Driver of the Day.** With 6 laps to go in a live Grand Prix, a note offers F1's vote, and the
-  race keeps playing in a small window while you vote. It can be turned off in Settings.
+  race keeps playing beside it while you vote. It can be turned off in Settings.
 - **Foldable aware:** re-lays out on fold and unfold; on the cover screen, double-tap a feed to
   fill the screen. Laptop mode: half-open with the hinge across, the stream goes up top and a
   timing tower and the track map fill the bottom.

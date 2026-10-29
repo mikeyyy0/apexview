@@ -23,8 +23,8 @@ android {
         minSdk = 29
         targetSdk = 35
         // Bump both for every build that goes to the phone, so it's clear which one is installed.
-        versionCode = 57
-        versionName = "0.57"
+        versionCode = 58
+        versionName = "0.58"
         val builtAt = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMM d, HH:mm"))
         buildConfigField("String", "BUILT_AT", "\"$builtAt\"")
         // Where updates come from (owner/repo on GitHub). A fork points this at its own releases.
@@ -100,6 +100,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Fold posture (half-open like a laptop) for laptop mode.
     implementation("androidx.window:window:1.3.0")
+    // Chrome sheet for the Driver of the Day vote, so the race stays on screen.
+    implementation("androidx.browser:browser:1.8.0")
 
     testImplementation("junit:junit:4.13.2")
     // Real org.json for JVM tests; android.jar only has stubs.

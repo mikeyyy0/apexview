@@ -112,6 +112,12 @@ class MainActivity : ComponentActivity() {
         app.pauseForBackground()
     }
 
+    /** Back in front: anything that lay over the app (the vote sheet) has gone. */
+    override fun onResume() {
+        super.onResume()
+        app.onResumed()
+    }
+
     override fun onDestroy() {
         unregisterReceiver(pipControls)
         app.stopAll()

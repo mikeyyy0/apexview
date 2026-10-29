@@ -240,6 +240,17 @@ fun ViewerScreen(app: AppState) {
         val density = LocalDensity.current
         val edgeInset = with(density) { 30.dp.toPx() }
         val band = with(density) { CONTROLS_BAND.toPx() }
+        val narrow = with(density) { width.toDp() } < VOTE_SIDE_SHEET
+        val compactWidth = with(density) { width.toDp() } < 600.dp
+        // The vote sheet rises over the bottom of a narrow screen: the feeds glide up to the top
+        // edge, clear of it, and back when it closes.
+        val sheetShift by animateFloatAsState(
+            if (app.voteSheetOpen && narrow) app.tiles.minOfOrNull { it.y } ?: 0f else 0f,
+            motion,
+            label = "voteSheet",
+        )
+        // On a wide one, the feeds shrink into the space left of it.
+        val sheetSide by animateFloatAsState(if (app.voteSheetOpen && !narrow) 1f else 0f, motion, label = "voteSide")
         LaunchedEffect(app.layoutRequest) { app.layoutIfRequested(width, height) }
         LaunchedEffect(width, height) { app.onCanvasResized(width, height) }
 
@@ -249,10 +260,17 @@ fun ViewerScreen(app: AppState) {
             Modifier
                 .fillMaxSize()
                 .graphicsLayer {
+                    val k = 1f - sheetSide * AppState.VOTE_SHEET_WIDTH
+                    scaleX = k
+                    scaleY = k
+                    transformOrigin = TransformOrigin(0f, 0.5f)
+                }
+                .graphicsLayer {
                     val s = 1f - lift * band / height
                     scaleX = s
                     scaleY = s
                     transformOrigin = TransformOrigin(0.5f, 1f)
+                    translationY = -sheetShift
                 }
                 .mapGestures(app, density)
         ) {
@@ -326,7 +344,8 @@ fun ViewerScreen(app: AppState) {
         ) { BottomChrome(app, clearOf(cutouts, width, height - bottomBand, height)) }
 
         Messages(app, Modifier.zIndex(CHROME_Z + 1).align(Alignment.Center))
-        VotePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(Alignment.BottomEnd))
+        // In the corner, or centred where the screen is too narrow for a corner to mean much.
+        VotePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(if (compactWidth) Alignment.BottomCenter else Alignment.BottomEnd))
 
         // The explanation overlay, above everything. Shown once by itself, the first time.
         Box(Modifier.fillMaxSize().zIndex(CHROME_Z + 2)) {
@@ -1106,6 +1125,8 @@ private fun BufferingRing(feed: FeedPlayer, modifier: Modifier) {
 }
 
 private const val VOTE_PROMPT_MS = 60_000L
+/** Below this width Chrome's vote sheet comes up from the bottom; at or above, in from the side. */
+private val VOTE_SIDE_SHEET = 840.dp
 
 /**
  * Near the end of a live Grand Prix: a note in the corner offering F1's Driver of the Day vote.
@@ -1149,7 +1170,7 @@ private fun VotePrompt(app: AppState, modifier: Modifier) {
                 Column(Modifier.weight(1f)) {
                     Text("Driver of the Day", style = Type.headline)
                     Text(
-                        "Cast your vote on F1's site. The race keeps playing in a small window while you do.",
+                        "Cast your vote on F1's site. The race keeps playing beside it while you do.",
                         style = Type.subhead,
                         modifier = Modifier.padding(top = 4.dp),
                     )
