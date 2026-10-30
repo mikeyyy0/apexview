@@ -35,9 +35,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import android.widget.Toast
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Replay
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
@@ -45,6 +53,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,7 +88,6 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.ui.draw.clipToBounds
 import coil.imageLoader
@@ -242,9 +250,7 @@ private fun <T> Shelf(
                 verticalAlignment = Alignment.Bottom,
             ) {
                 Text(title, style = Type.title2, modifier = Modifier.weight(1f))
-                action?.let { (label, onClick) ->
-                    Text(label, style = Type.subhead, modifier = Modifier.pressable(onClick = onClick).padding(start = 12.dp, top = 4.dp))
-                }
+                action?.let { (label, onClick) -> HeaderAction(label, onClick) }
             }
             LazyRow(
                 state = app.rowState(key),
@@ -393,6 +399,138 @@ private val DayFormat = SimpleDateFormat("MMM d", Locale.getDefault())
 
 private fun dates(w: WeekendInfo) = "${DayFormat.format(Date(w.startMs))} – ${DayFormat.format(Date(w.endMs))}"
 
+/**
+ * A weekend's schedule as F1 TV lays it out: a column per day, each event with its start time,
+ * a live mark while it runs, or a replay mark once it can be watched. Tapping one plays it.
+ */
+@Composable
+private fun WeekendSchedule(
+    app: AppState,
+    weekend: WeekendInfo,
+    events: List<CatalogItem>,
+    sessions: List<CatalogItem>,
+    title: String,
+    action: Pair<String, () -> Unit>? = null,
+) {
+    val days = remember(events) {
+        events.filter { it.startMs > 0 }.groupBy { DAY.format(java.util.Date(it.startMs)) }.toList()
+    }
+    if (days.isEmpty()) return
+    val state = rememberScrollState()
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val gap = 12.dp
+        val perRow = when {
+            maxWidth >= 1000.dp -> 4f
+            maxWidth >= 600.dp -> 3.12f
+            else -> 1.2f
+        }.coerceAtMost(days.size.toFloat())
+        val dayWidth = ((maxWidth - SidePadding * 2 - gap * (perRow.toInt() - 1).coerceAtLeast(0)) / perRow).coerceAtLeast(225.dp)
+        // Opens with the day to watch first in the row.
+        LaunchedEffect(weekend.meetingKey, perRow) {
+            if (state.value == 0) {
+                val now = System.currentTimeMillis()
+                val starts = events.filter { it.startMs > 0 }.map { it.startMs }
+                val inWeekend = now in (starts.min() - DAY_MS)..(starts.max() + DAY_MS)
+                val today = if (inWeekend) days.indexOfFirst { it.first == DAY.format(java.util.Date(now)) } else -1
+                val first = scheduleDayToOpen(days.map { it.second }, today, now, sessions.map { it.contentId }.toSet()) { app.history[it]?.finished == true }
+                if (first > 0) state.scrollTo(with(density) { ((dayWidth + gap) * first).roundToPx() })
+            }
+        }
+        Column {
+            Row(
+                Modifier.fillMaxWidth().padding(start = SidePadding, end = SidePadding, bottom = 8.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                Text(title, style = Type.title2, modifier = Modifier.weight(1f))
+                action?.let { (label, onClick) -> HeaderAction(label, onClick) }
+            }
+            // Every day is laid out, not just the visible ones, so the row keeps the tallest day's height while scrolling.
+            Row(
+                Modifier.horizontalScroll(state).padding(horizontal = SidePadding),
+                horizontalArrangement = Arrangement.spacedBy(gap),
+            ) {
+                days.forEach { (day, list) ->
+                    Column(Modifier.width(dayWidth)) {
+                        Text(day.uppercase(), style = Type.footnote.copy(color = Ink.primary, fontWeight = FontWeight.Bold), modifier = Modifier.padding(top = 2.dp, bottom = 4.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(Ink.tertiary))
+                        Spacer(Modifier.height(8.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            list.forEach { ScheduleRow(app, it) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The link beside a row's title: white with an arrow, so it reads as something to tap. */
+@Composable
+private fun HeaderAction(label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.pressable(onClick = onClick).padding(start = 12.dp, top = 4.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = Type.headline)
+        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = Ink.primary, modifier = Modifier.size(24.dp))
+    }
+}
+
+/** One event as a button, the way F1 TV draws them: series tab, title, then its time or how to watch. */
+@Composable
+private fun ScheduleRow(app: AppState, item: CatalogItem) {
+    // Ended but not up as a replay yet: still its time, and a tap says so.
+    val playable = item.live || (!item.upcoming && item.kind != "LIVE_EVENT")
+    val time = CLOCK.format(java.util.Date(item.startMs))
+    val context = LocalContext.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .heightIn(min = 40.dp)
+            .pressable {
+                when {
+                    playable -> app.watch(item)
+                    item.upcoming -> Toast.makeText(context, "${item.title} starts at $time.", Toast.LENGTH_SHORT).show()
+                    else -> Toast.makeText(context, "The ${item.title} replay isn't up yet.", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .clip(RoundedCornerShape(4.dp))
+            .background(if (playable) ScheduleReady else Ink.surface),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Watchable now is lit in red; still to come stays dark and grey.
+        Box(Modifier.width(3.dp).fillMaxHeight().background(if (playable) ScheduleRed else Ink.tertiary))
+        Box(Modifier.width(23.dp).fillMaxHeight().background(if (playable) ScheduleTab else Ink.surfaceHigh), contentAlignment = Alignment.Center) {
+            Text("F1", style = Type.caption.copy(fontSize = 11.sp, color = if (playable) Ink.primary else Ink.secondary, fontWeight = FontWeight.Bold))
+        }
+        Text(
+            item.title,
+            style = Type.footnote.copy(color = if (playable) Ink.primary else Ink.secondary, fontWeight = FontWeight.Medium, lineHeight = 16.sp),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+        Box(Modifier.width(1.dp).fillMaxHeight().padding(vertical = 12.dp).background(Ink.tertiary))
+        Box(Modifier.padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
+            when {
+                item.live -> LiveMark()
+                playable -> Icon(Icons.Rounded.Replay, contentDescription = "Watch", tint = Ink.primary, modifier = Modifier.size(18.dp))
+                else -> Text(time, style = Type.footnote.copy(color = Ink.secondary, fontWeight = FontWeight.SemiBold))
+            }
+        }
+    }
+}
+
+private val ScheduleRed = Color(0xFFE10600)
+private val ScheduleTab = Color(0xFF8A0F0A)
+private val ScheduleReady = Color(0xFF3A3A3C)
+
+private const val DAY_MS = 24 * 60 * 60 * 1000L
+private val DAY = java.text.SimpleDateFormat("EEEE", java.util.Locale.getDefault())
+private val CLOCK = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
+
 private fun roundLabel(w: WeekendInfo) = w.round?.let { "Round $it" } ?: "Testing"
 
 /** When it runs and how long, or just when for one that hasn't started. */
@@ -522,6 +660,50 @@ fun HomeScreen(app: AppState) {
 
         item { Spacer(Modifier.height(20.dp)) }
 
+        // The carousel leads with what's live; a row only when there's more than one.
+        if (app.liveNow.size > 1) {
+            item {
+                Shelf(app, "Live now", app.liveNow.toList()) { item, width ->
+                    ArtCard(item.image, item.title, item.subtitle, width, live = true) {
+                        app.openPicker(item.contentId, listOfNotNull(item.subtitle, item.title).joinToString(" · "), item.image)
+                    }
+                }
+                Spacer(Modifier.height(28.dp))
+            }
+        }
+
+        if (latest != null && latestContent != null && latestContent.schedule.isNotEmpty()) {
+            // The weekend's schedule under the carousel, as on F1 TV's home page, until the weekend ends.
+            if (!latestContent.scheduleOver(now)) item {
+                WeekendSchedule(app, latest, latestContent.schedule, latestContent.sessions, latest.name, action = "Weekend" to { app.open(Screen.Weekend(latest)) })
+                Spacer(Modifier.height(28.dp))
+            }
+        } else if (latest != null && latestContent != null && latestContent.sessions.isNotEmpty()) {
+            item {
+                Shelf(app, latest.name, latestContent.sessions.reversed()) { item, width ->
+                    ArtCard(item.image, item.title, sessionLine(item), width, live = item.live, upcoming = item.upcoming) {
+                        app.openPicker(item.contentId, "${latest.name} · ${item.title}", item.image)
+                    }
+                }
+                Spacer(Modifier.height(28.dp))
+            }
+        }
+
+        // F1 TV's own rows, each video once. The weekend's rows come first (its shows, press
+        // conferences, F1 Academy), then F1 TV's catch-all row for the weekend.
+        val f1Rows = app.homePage?.rows.orEmpty()
+        // Once the schedule is gone, its sessions may show in these rows again.
+        val shown = latestContent?.takeUnless { it.schedule.isNotEmpty() && it.scheduleOver(now) }?.sessions.orEmpty().map { it.contentId }.toMutableSet()
+        fun unique(row: CatalogRow) = row.items.filter { it.pageId != null || shown.add(it.contentId) }
+        val weekendRows = f1Rows.filter { r ->
+            r.tag == CatalogRow.WEEKEND || (r.tag != CatalogRow.ARCHIVE && !r.posters && r.items.any { it.meeting.isNotEmpty() && it.meeting == latest?.name })
+        }.sortedBy { it.tag == CatalogRow.WEEKEND }
+        weekendRows.forEach { row ->
+            val items = unique(row)
+            val title = if (row.tag == CatalogRow.WEEKEND) "More from the weekend" else rowTitle(row.title)
+            item { VideoShelf(app, title, items) }
+        }
+
         app.recents.toList().takeIf { it.isNotEmpty() && app.tiles.isEmpty() }?.let { recents ->
             item {
                 Shelf(app, "Continue watching", recents) { it, width ->
@@ -540,43 +722,6 @@ fun HomeScreen(app: AppState) {
                 }
                 Spacer(Modifier.height(28.dp))
             }
-        }
-
-        // The carousel leads with what's live; a row only when there's more than one.
-        if (app.liveNow.size > 1) {
-            item {
-                Shelf(app, "Live now", app.liveNow.toList()) { item, width ->
-                    ArtCard(item.image, item.title, item.subtitle, width, live = true) {
-                        app.openPicker(item.contentId, listOfNotNull(item.subtitle, item.title).joinToString(" · "), item.image)
-                    }
-                }
-                Spacer(Modifier.height(28.dp))
-            }
-        }
-
-        if (latest != null && latestContent != null && latestContent.sessions.isNotEmpty()) {
-            item {
-                Shelf(app, latest.name, latestContent.sessions.reversed()) { item, width ->
-                    ArtCard(item.image, item.title, sessionLine(item), width, live = item.live, upcoming = item.upcoming) {
-                        app.openPicker(item.contentId, "${latest.name} · ${item.title}", item.image)
-                    }
-                }
-                Spacer(Modifier.height(28.dp))
-            }
-        }
-
-        // F1 TV's own rows, each video once. The weekend's rows come first (its shows, press
-        // conferences, F1 Academy), then F1 TV's catch-all row for the weekend.
-        val f1Rows = app.homePage?.rows.orEmpty()
-        val shown = latestContent?.sessions.orEmpty().map { it.contentId }.toMutableSet()
-        fun unique(row: CatalogRow) = row.items.filter { it.pageId != null || shown.add(it.contentId) }
-        val weekendRows = f1Rows.filter { r ->
-            r.tag == CatalogRow.WEEKEND || (r.tag != CatalogRow.ARCHIVE && !r.posters && r.items.any { it.meeting.isNotEmpty() && it.meeting == latest?.name })
-        }.sortedBy { it.tag == CatalogRow.WEEKEND }
-        weekendRows.forEach { row ->
-            val items = unique(row)
-            val title = if (row.tag == CatalogRow.WEEKEND) "More from the weekend" else rowTitle(row.title)
-            item { VideoShelf(app, title, items) }
         }
 
         item {
@@ -622,6 +767,8 @@ private const val CAROUSEL_MS = 7_000L
 private fun rowTitle(label: String) = when (label) {
     "Shows & Analysis" -> "Shows and analysis"
     "Press Conferences" -> "Press conferences"
+    "Live & Replays" -> "Live and replays"
+    "From The Archive" -> "From the archive"
     else -> label
 }
 
@@ -813,20 +960,39 @@ fun WeekendScreen(app: AppState, weekend: WeekendInfo, artKey: String?) {
                     )
                 }
             }
-            item {
-                Shelf(app, "Sessions", content.sessions) { item, width ->
-                    ArtCard(item.image, item.title, sessionLine(item), width, live = item.live, upcoming = item.upcoming) {
-                        app.openPicker(item.contentId, "${weekend.name} · ${item.title}", item.image)
+            if (content.schedule.isNotEmpty()) {
+                // F1 TV's own layout: the schedule by day, then its rows in its order
+                // (live and replays, press conferences, past races here).
+                item {
+                    WeekendSchedule(app, weekend, content.schedule, content.sessions, "Schedule")
+                    Spacer(Modifier.height(28.dp))
+                }
+                content.rows.forEach { row ->
+                    item { VideoShelf(app, rowTitle(row.title), row.items, key = "w${weekend.meetingKey}-${row.title}") }
+                }
+            } else {
+                val sessionsShelf: @Composable () -> Unit = {
+                    Shelf(app, "Sessions", content.sessions) { item, width ->
+                        ArtCard(item.image, item.title, sessionLine(item), width, live = item.live, upcoming = item.upcoming) {
+                            app.openPicker(item.contentId, "${weekend.name} · ${item.title}", item.image)
+                        }
                     }
                 }
-                Spacer(Modifier.height(28.dp))
-            }
-            item {
-                Shelf(app, "Highlights and shows", content.videos) { item, width ->
-                    ArtCard(item.image, item.title, sessionLine(item), width, live = item.live, upcoming = item.upcoming) {
-                        app.openPicker(item.contentId, item.title, item.image)
+                val videosShelf: @Composable () -> Unit = {
+                    Shelf(app, "Highlights and shows", content.videos) { item, width ->
+                        ArtCard(item.image, item.title, sessionLine(item), width, live = item.live, upcoming = item.upcoming) {
+                            app.openPicker(item.contentId, item.title, item.image)
+                        }
                     }
                 }
+                // Before the first session can be watched, the warm-up show and press conferences
+                // are all there is to play, so they lead, as F1 TV's "Live & Replays" row does.
+                val videosFirst = content.sessions.all { it.upcoming } && content.videos.any { !it.upcoming }
+                item {
+                    if (videosFirst) videosShelf() else sessionsShelf()
+                    Spacer(Modifier.height(28.dp))
+                }
+                item { if (videosFirst) sessionsShelf() else videosShelf() }
             }
         }
     }

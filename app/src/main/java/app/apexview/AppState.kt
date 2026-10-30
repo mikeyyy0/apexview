@@ -733,9 +733,8 @@ class AppState(
 
         liveNow.forEach { add("Live now", it) }
 
-        recents.firstOrNull { r -> !r.live && history[r.contentId]?.let { now - it.at < 3 * DAY_MS } == true }?.let {
-            if (used.add(it.contentId)) picks += Pick("Pick up where you left off", resume = it)
-        }
+        // F1 TV's own picks in its order, ahead of anything from your history.
+        homePage?.featured?.forEach { add("Featured on F1 TV", it) }
 
         val latest = latestWeekend(now)
         val content = latest?.let { weekendContent[it.meetingKey] }
@@ -760,8 +759,6 @@ class AppState(
             }
         }
 
-        homePage?.featured?.forEach { add("Featured on F1 TV", it) }
-
         // The next weekend: during one, its next session; before one, its build-up.
         val next = weekends.firstOrNull { it.isCurrent(now) && nextSession(it) != null }
             ?: weekends.firstOrNull { it.startMs > now }
@@ -778,6 +775,11 @@ class AppState(
                 },
                 weekend = next,
             )
+        }
+
+        // Your own history comes after what F1 TV and the weekend put first.
+        recents.firstOrNull { r -> !r.live && history[r.contentId]?.let { now - it.at < 3 * DAY_MS } == true }?.let {
+            if (used.add(it.contentId)) picks += Pick("Pick up where you left off", resume = it)
         }
 
         // One race from the archive, a different one each day.

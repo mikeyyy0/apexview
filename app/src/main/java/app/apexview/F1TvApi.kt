@@ -64,6 +64,19 @@ data class CatalogItem(
     val pageId: Int? = null,
 )
 
+/**
+ * Which day of a weekend's schedule to open on: today, once something of today's has started.
+ * Until then the day before, unless its sessions are all watched ([finished]; shows don't count,
+ * and a day of only shows counts them). [today] is -1 outside the weekend: then its start or its end.
+ */
+fun scheduleDayToOpen(days: List<List<CatalogItem>>, today: Int, now: Long, sessions: Set<Long>, finished: (Long) -> Boolean): Int {
+    if (today !in days.indices) return if (days.first().first().startMs > now) 0 else days.lastIndex
+    if (today == 0 || days[today].any { it.live || it.startMs <= now }) return today
+    val before = days[today - 1]
+    val needed = before.filter { it.contentId in sessions }.ifEmpty { before }
+    return if (needed.all { finished(it.contentId) }) today else today - 1
+}
+
 /** A titled row of F1 TV's: shows and documentaries come as [posters]. */
 data class CatalogRow(val title: String, val items: List<CatalogItem>, val posters: Boolean = false, val tag: String = "") {
     companion object {
@@ -85,7 +98,21 @@ data class WeekendContent(
     val sessions: List<CatalogItem>,
     /** Highlights, shows and press conferences. */
     val videos: List<CatalogItem>,
-)
+    /** F1 TV's schedule for the weekend: sessions and live shows, in running order. */
+    val schedule: List<CatalogItem> = emptyList(),
+    /** F1 TV's rows under the schedule, in its order: live and replays, press conferences, the archive. */
+    val rows: List<CatalogRow> = emptyList(),
+) {
+    /** Nothing live, and the last event of the schedule has had time to finish. */
+    fun scheduleOver(now: Long): Boolean {
+        val last = schedule.maxOfOrNull { it.startMs } ?: return true
+        return schedule.none { it.live } && now > last + SCHEDULE_TAIL_MS
+    }
+
+    private companion object {
+        const val SCHEDULE_TAIL_MS = 3 * 60 * 60 * 1000L
+    }
+}
 
 /** What contentPlay returns: the stream, and the Widevine license URL when the stream is protected. */
 data class PlayInfo(val url: String, val licenseUrl: String?, val streamType: String)
@@ -199,9 +226,11 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
      * search, which only has what can be watched already.
      */
     suspend fun weekend(weekend: WeekendInfo): WeekendContent = withContext(Dispatchers.IO) {
-        val containers = weekend.pageId?.let { pageId ->
-            runCatching { pageItems(pageId) }.getOrNull()?.takeIf { it.isNotEmpty() }
-        } ?: search(
+        val page = weekend.pageId?.let { pageId ->
+            runCatching { weekendPage(pageId) }.getOrNull()?.takeIf { it.schedule.isNotEmpty() || it.rows.isNotEmpty() }
+        }
+        // Past races at this circuit belong to other weekends: a row of their own, not this one's videos.
+        val containers = page?.let { p -> p.schedule + p.rows.filterNot { it.first.isArchive() }.flatMap { it.second } } ?: search(
             "orderBy" to "meeting_End_Date", "sortOrder" to "asc",
             "filter_MeetingKey" to weekend.meetingKey, "filter_orderByFom" to "Y", "maxResults" to "100",
         )
@@ -209,6 +238,7 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
         val sessions = mutableListOf<CatalogItem>()
         val videos = mutableListOf<CatalogItem>()
         val seen = mutableSetOf<Long>()
+        val byId = mutableMapOf<Long, CatalogItem>()
         containers.forEach { container ->
             val meta = container.optJSONObject("metadata") ?: return@forEach
             if (text(meta, "contentType") == "BUNDLE" || !seen.add(meta.optLong("contentId"))) return@forEach
@@ -241,12 +271,25 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
                 genre = meta.optJSONArray("genres")?.optString(0).orEmpty(),
                 meeting = weekend.name,
             )
+            byId[item.contentId] = item
             if (isSession) sessions += item else videos += item
         }
+        fun id(container: JSONObject) = container.optJSONObject("metadata")?.optLong("contentId") ?: 0
+        val schedule = page?.schedule.orEmpty().mapNotNull { byId[id(it)] }.sortedBy { it.startMs }
+        val rows = page?.rows.orEmpty().map { (label, items) ->
+            CatalogRow(label, items.mapNotNull { if (label.isArchive()) catalogItem(it) else byId[id(it)] }.distinctBy { it.contentId })
+        }.filter { it.items.isNotEmpty() }
         WeekendContent(
             sessions.sortedBy { it.startMs },
-            // Shows still to come lead, in running order; the rest keep F1 TV's order.
-            videos.filter { it.upcoming }.sortedBy { it.startMs } + videos.filterNot { it.upcoming },
+            // What can be watched now leads, as on F1 TV's "Live & Replays" row: live, then the
+            // newest replays, then press conferences and other undated videos in F1 TV's order.
+            // Shows still to come follow, in running order.
+            videos.filter { it.live } +
+                videos.filter { !it.live && !it.upcoming && it.startMs > 0 }.sortedByDescending { it.startMs } +
+                videos.filter { !it.live && !it.upcoming && it.startMs <= 0 } +
+                videos.filter { it.upcoming }.sortedBy { it.startMs },
+            schedule,
+            rows,
         )
     }
 
@@ -390,14 +433,17 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
         )
     }
 
-    /**
-     * Every item on F1 TV's weekend page: its schedule (Formula 1 events) and its rows of
-     * highlights, shows and press conferences. F1 Academy and archive rows are left out.
-     */
-    private fun pageItems(pageId: Int): List<JSONObject> {
+    /** F1 TV's weekend page: its schedule (Formula 1 events) and its rows, by label, in its order. */
+    private class WeekendPage(val schedule: List<JSONObject>, val rows: List<Pair<String, List<JSONObject>>>)
+
+    private fun String.isArchive() = contains("Archive", ignoreCase = true)
+
+    /** F1 TV's weekend page. F1 Academy rows are left out. */
+    private fun weekendPage(pageId: Int): WeekendPage {
         val containers = get(url("2.0", "PAGE/$pageId/$tier/$groupId"))
-            .getJSONObject("resultObj").optJSONArray("containers") ?: return emptyList()
-        val items = mutableListOf<JSONObject>()
+            .getJSONObject("resultObj").optJSONArray("containers") ?: return WeekendPage(emptyList(), emptyList())
+        val schedule = mutableListOf<JSONObject>()
+        val rows = mutableListOf<Pair<String, List<JSONObject>>>()
         for (i in 0 until containers.length()) {
             val container = containers.getJSONObject(i)
             val results = container.optJSONObject("retrieveItems")?.optJSONObject("resultObj")
@@ -408,16 +454,16 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
                     val group = groups.firstOrNull { text(it, "eventName") == "FORMULA 1" }
                         ?: groups.firstOrNull { text(it, "eventName") == "ALL" } ?: continue
                     val events = group.optJSONArray("events") ?: continue
-                    for (j in 0 until events.length()) items += events.getJSONObject(j)
+                    for (j in 0 until events.length()) schedule += events.getJSONObject(j)
                 }
                 "horizontal_thumbnail" -> {
                     val label = container.optJSONObject("metadata")?.let { text(it, "label") }.orEmpty()
-                    if (label.contains("Academy", ignoreCase = true) || label.contains("Archive", ignoreCase = true)) continue
-                    for (j in 0 until results.length()) items += results.getJSONObject(j)
+                    if (label.isBlank() || label.contains("Academy", ignoreCase = true)) continue
+                    rows += label to (0 until results.length()).map { results.getJSONObject(it) }
                 }
             }
         }
-        return items
+        return WeekendPage(schedule, rows)
     }
 
     private fun search(vararg params: Pair<String, String>): List<JSONObject> {
