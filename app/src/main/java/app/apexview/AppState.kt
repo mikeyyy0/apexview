@@ -1023,7 +1023,7 @@ class AppState(
     /** Room for more feeds; past four the phone's decoders start to freeze. */
     val roomForFeeds get() = MAX_FEEDS - tiles.size
 
-    private fun addFeeds(contentId: Long, requested: List<Channel>) {
+    private fun addFeeds(contentId: Long, requested: List<Channel>, added: (Tile) -> Unit = {}) {
         if (roomForFeeds <= 0) {
             message = "4 feeds is the most this phone plays smoothly. Remove one or switch a feed instead."
             return
@@ -1064,6 +1064,7 @@ class AppState(
                 val tile = Tile(nextTileId++, contentId, channel, feed)
                 tiles.add(tile)
                 raise(tile)
+                added(tile)
             }
             // A fresh start uses the layout picked as default (Save layout makes it the custom one).
             if (first && pendingResume?.contentId != contentId) layoutMode = defaultLayoutMode
@@ -1308,6 +1309,7 @@ class AppState(
         if (laptopActive) {
             val spare = tiles.filter { it.id != bigTileId && !it.audible && !it.pinned }
                 .minWithOrNull(compareBy<Tile>({ interest(it, now) }, { it.mapPickedAt }))
+            if (spare == null && onboardOverCommentary(channel)) return
             val swap = spare ?: tiles.firstOrNull { it.id == bigTileId } ?: return
             swap.mapPickedAt = System.currentTimeMillis()
             switchFeed(swap, channel)
@@ -1350,6 +1352,29 @@ class AppState(
 
     fun closeTileMenu() {
         tileMenu = null
+    }
+
+    /** A feed chosen from a tile's own menu. In laptop mode the commentary up top keeps playing under an onboard. */
+    fun chooseFeed(tile: Tile, channel: Channel) {
+        if (laptopActive && tile.id == bigTileId && onboardOverCommentary(channel)) {
+            tileMenu = null
+            rememberBroadcast()
+            return
+        }
+        switchFeed(tile, channel)
+    }
+
+    /**
+     * In laptop mode, with the commentary on the broadcast up top and nothing waiting below: the
+     * onboard joins as a feed of its own and comes up top, so the broadcast and its commentary
+     * carry on out of sight. False if that doesn't apply, for the caller to switch a feed instead.
+     */
+    private fun onboardOverCommentary(channel: Channel): Boolean {
+        val top = tiles.firstOrNull { it.id == bigTileId } ?: return false
+        if (!top.audible || top.channel.racingNumber != null || channel.racingNumber == null || roomForFeeds <= 0) return false
+        // Already starting from the last tap.
+        if (!busy) addFeeds(top.contentId, listOf(channel)) { putOnTop(it) }
+        return true
     }
 
     /** Puts another channel in the tile, keeping its place, size and audio. */

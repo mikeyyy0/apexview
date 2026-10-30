@@ -233,6 +233,10 @@ class DriverTrack(private val t: LongArray, private val x: FloatArray, private v
         return Pair(x[lo] + (x[hi] - x[lo]) * f, y[lo] + (y[hi] - y[lo]) * f)
     }
 
+    /** As [at], but a car not heard from yet waits where it was first seen. For showing on the map. */
+    fun atOrFirst(utcMs: Long): Pair<Float, Float>? =
+        if (n > 0 && utcMs < t[0]) Pair(x[0], y[0]) else at(utcMs)
+
     companion object {
         private const val MAX_GAP_MS = 5_000L
     }

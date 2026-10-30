@@ -840,7 +840,7 @@ private fun TileHeader(app: AppState, tile: Tile) {
 private fun ChannelRow(app: AppState, tile: Tile, channel: Channel) {
     val current = channel == tile.channel
     Row(
-        Modifier.fillMaxWidth().pressable(scaleTo = 0.99f) { app.switchFeed(tile, channel) }.padding(vertical = 12.dp),
+        Modifier.fillMaxWidth().pressable(scaleTo = 0.99f) { app.chooseFeed(tile, channel) }.padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(channel.teamColor?.let { Color(it) } ?: Color.Transparent))
@@ -892,7 +892,7 @@ private fun TileMenuSheet(app: AppState, tile: Tile) {
                 TowerHeader(timing)
                 ranked.forEach { (channel, number, state) ->
                     TowerRow(timing, number, state, timing.tyres[number]?.at(now), highlight = channel == tile.channel) {
-                        app.switchFeed(tile, channel)
+                        app.chooseFeed(tile, channel)
                     }
                 }
             }

@@ -161,7 +161,7 @@ internal fun rememberMapTime(app: AppState): Long {
 }
 
 private fun carsAt(timing: SessionTiming, now: Long) = timing.tracks.mapNotNull { (number, track) ->
-    track.at(now)?.let { (x, y) -> Car(number, x, y, timing.states[number]?.at(now) ?: LapState.UNKNOWN) }
+    track.atOrFirst(now)?.let { (x, y) -> Car(number, x, y, timing.states[number]?.at(now) ?: LapState.UNKNOWN) }
 }
 
 private fun TextMeasurer.label(text: String, size: TextUnit, bold: Boolean = true) =

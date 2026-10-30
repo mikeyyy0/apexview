@@ -67,6 +67,7 @@ class LiveTimingFeed(
     private val statusLines = StringBuilder()
     private val controlLines = StringBuilder()
     private var streamStart: Long? = null
+    private var stateSeen = false
     private var sessionType = ""
     private var sessionName = ""
     /** The race's lap count (CurrentLap, TotalLaps); F1 sends it for races only. */
@@ -191,7 +192,13 @@ class LiveTimingFeed(
                             val state = message.optJSONObject("result") ?: continue
                             Log.i(TAG, "subscribed: " + state.keys().asSequence().joinToString())
                             val now = System.currentTimeMillis()
-                            state.keys().forEach { topic -> receive(topic, state.opt(topic), now) }
+                            // The first state counts from the start of the stream: the picture is
+                            // behind the timing, and would otherwise show nothing until it caught up.
+                            val opening = !stateSeen
+                            stateSeen = true
+                            state.keys().forEach { topic -> receive(topic, state.opt(topic), now, opening) }
+                            // Read it at the next refresh, not whenever the next parse falls due.
+                            synchronized(this@LiveTimingFeed) { parsedAt = 0L }
                             onStatus(null)
                         }
                         6 -> socket.send("""{"type":6}""" + RS)
@@ -228,12 +235,12 @@ class LiveTimingFeed(
 
     /** One topic's change (or its state on subscribing). */
     @Synchronized
-    private fun receive(topic: String, data: Any?, utc: Long) {
+    private fun receive(topic: String, data: Any?, utc: Long, opening: Boolean = false) {
         if (data == null) return
         val seen = (topicCounts[topic] ?: 0) + 1
         topicCounts[topic] = seen
         if (seen == 1 || seen % 500 == 0) Log.i(TAG, "$topic x$seen, ${tracks.size} cars tracked")
-        val start = streamStart ?: (utc - 1_000).also { streamStart = it }
+        val start = streamStart ?: (utc - HEAD_START_MS).also { streamStart = it }
         when (topic) {
             "Position.z" -> runCatching { JSONObject(archive.inflate(data.toString())) }.getOrNull()
                 ?.let { archive.addPositions(it, tracks) }
@@ -249,20 +256,21 @@ class LiveTimingFeed(
                 if (count.has("CurrentLap")) currentLap = count.optInt("CurrentLap")
                 if (count.has("TotalLaps")) totalLaps = count.optInt("TotalLaps")
             }
-            "TimingData" -> append(timingLines, start, utc, data)
-            "TimingAppData" -> append(tyreLines, start, utc, data)
-            "SessionStatus" -> append(statusLines, start, utc, data)
-            "RaceControlMessages" -> append(controlLines, start, utc, data)
-            "TrackStatus" -> append(trackStatusLines, start, utc, data)
+            "TimingData" -> append(timingLines, start, utc, data, opening)
+            "TimingAppData" -> append(tyreLines, start, utc, data, opening)
+            "SessionStatus" -> append(statusLines, start, utc, data, opening)
+            "RaceControlMessages" -> append(controlLines, start, utc, data, opening)
+            "TrackStatus" -> append(trackStatusLines, start, utc, data, opening)
         }
     }
 
     /** Adds a change as a jsonStream line ("HH:MM:SS.mmm" + JSON), the form the archive parsers read. */
-    private fun append(to: StringBuilder, start: Long, utc: Long, data: Any) {
-        val offset = (utc - start).coerceAtLeast(0)
-        to.append("%02d:%02d:%02d.%03d".format(offset / 3_600_000, offset / 60_000 % 60, offset / 1000 % 60, offset % 1000))
-            .append(data.toString())
-            .append('\n')
+    private fun append(to: StringBuilder, start: Long, utc: Long, data: Any, opening: Boolean = false) {
+        val offset = if (opening) 0L else (utc - start).coerceAtLeast(0)
+        val line = "%02d:%02d:%02d.%03d".format(offset / 3_600_000, offset / 60_000 % 60, offset / 1000 % 60, offset % 1000) +
+            data.toString() + '\n'
+        // Any changes that beat the state here came after it.
+        if (opening) to.insert(0, line) else to.append(line)
     }
 
     /** Partial updates fill in or change fields; nested objects merge the same way. */
@@ -312,7 +320,7 @@ class LiveTimingFeed(
             outline = outline.outline,
             hasStartFinish = outline.hasStartFinish,
             corners = corners.orEmpty(),
-            startUtcMs = start,
+            startUtcMs = start + HEAD_START_MS,
             circuitKey = ref.circuitKey,
             startedUtc = runCatching { archive.parseSessionStarted(status, start) }.getOrNull(),
             finishedUtc = runCatching { archive.parseChequered(controlLines.toString(), start) }.getOrNull(),
@@ -344,6 +352,8 @@ class LiveTimingFeed(
             "TeamRadio", "TimingAppData", "TrackStatus", "LapCount",
         )
         private const val REFRESH_MS = 2_000L
+        /** How far before connecting the stream counts from: more than the picture can be behind. */
+        private const val HEAD_START_MS = 10 * 60_000L
         // Lap states and timing cards are re-read every 10 s: the picture runs far enough behind
         // the timing that they're never late.
         private const val PARSE_MS = 10_000L
