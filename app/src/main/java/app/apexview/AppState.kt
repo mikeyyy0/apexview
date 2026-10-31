@@ -299,12 +299,12 @@ class AppState(
             }
             val cooling = thermal >= android.os.PowerManager.THERMAL_STATUS_CRITICAL && tile !== main
             tile.coolingOff = visible && cooling
-            val (w, h) = when {
-                // The pop-out is small whatever the tile's size on the canvas.
-                inPip -> 640f to 360f
-                else -> tile.w to tile.h
+            // The pop-out stays on the rendition it has: another would stall it going in and coming back.
+            if (inPip && visible && !cooling) {
+                tile.feed.keepVideo()
+                return@forEach
             }
-            tile.feed.setVideo(visible && !cooling, (w * scale).toInt(), (h * scale).toInt())
+            tile.feed.setVideo(visible && !cooling, (tile.w * scale).toInt(), (tile.h * scale).toInt())
         }
     }
 
@@ -541,6 +541,9 @@ class AppState(
      * account once the Apple account is linked to it; until then it's REG.
      */
     val hasVideoPlan get() = tier.isNotEmpty() && tier !in NO_VIDEO_TIERS
+
+    /** A plan with video but no multiview, like Pro: F1 sends it one feed per session. */
+    val singleFeedPlan get() = hasVideoPlan && !api.hasMultiview
     /** The last crash's report, waiting for the person to send it or not. */
     var crashReport by mutableStateOf(CrashReports.pending(context))
         private set
@@ -632,6 +635,20 @@ class AppState(
                 homeError = "Couldn't load F1 TV: ${e.message}"
             }
         }
+    }
+
+    /**
+     * Keeps home current while the app stays open: a session going live or ending changes the
+     * carousel and the weekend's schedule. Not while watching, when nothing here is on screen.
+     * A failed check leaves things as they are.
+     */
+    suspend fun refreshLive() {
+        if (auth != AuthState.SIGNED_IN || (tiles.isNotEmpty() && !browsing)) return
+        val newLive = runCatching { api.prepare(); api.liveNow() }.getOrNull() ?: return
+        if (newLive.map { it.contentId } == liveNow.map { it.contentId }) return
+        liveNow.clear()
+        liveNow.addAll(newLive)
+        latestWeekend()?.let(::loadWeekend)
     }
 
     /** Fetched fresh each time, so sessions flip from upcoming to live to replay as the weekend runs. */
@@ -1118,7 +1135,10 @@ class AppState(
 
         val url = if (channel.channelId == null) session.feeds.values.firstOrNull()
         else session.feeds[channel.channelId]
-        return session.stream(url ?: throw IOException("F1 returned no stream for this channel"))
+        return session.stream(url ?: throw IOException(
+            if (singleFeedPlan) "F1 didn't send this feed to your plan. Watching several at once needs F1 TV Premium."
+            else "F1 returned no stream for this channel"
+        ))
     }
 
     // Track map.
@@ -2299,6 +2319,58 @@ class AppState(
         if (chromeVisible) chromeVisible = false else showChrome()
     }
 
+    /** On a TV there's no touch: no dragging feeds around, and Back steps the controls away first. */
+    val isTv = context.getSystemService(android.app.UiModeManager::class.java).currentModeType ==
+        android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+    /** Whether something in the viewer has the remote's focus; arrows then move between controls. */
+    var controlsFocused by mutableStateOf(false)
+    /** Asks the viewer to put the remote's focus on play/pause. */
+    var wantPlayFocus by mutableStateOf(false)
+
+    /**
+     * A remote's or keyboard's key while watching. With nothing focused, left and right skip and
+     * the other arrows and select bring up the controls on play/pause. With a control focused the
+     * keys do their usual moving and pressing, and only keep the controls up. Sheets are windows
+     * of their own, so they never get here.
+     */
+    fun onRemoteKey(event: android.view.KeyEvent): Boolean {
+        if (tiles.isEmpty() || browsing || inPip) return false
+        val down = event.action == android.view.KeyEvent.ACTION_DOWN
+        val first = down && event.repeatCount == 0
+        when (event.keyCode) {
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> if (first) togglePlay()
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY -> if (first && !playing) togglePlay()
+            android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> if (first && playing) togglePlay()
+            android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> if (down) remoteSkip(event, 10_000)
+            android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> if (down) remoteSkip(event, -10_000)
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT,
+            android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_DPAD_DOWN,
+            android.view.KeyEvent.KEYCODE_DPAD_CENTER, android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                if (helpOpen) {
+                    if (first) closeHelp()
+                } else if (controlsFocused && chromeVisible) {
+                    if (down) showChrome()
+                    return false
+                } else when (event.keyCode) {
+                    android.view.KeyEvent.KEYCODE_DPAD_LEFT -> if (down) remoteSkip(event, -10_000)
+                    android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> if (down) remoteSkip(event, 10_000)
+                    else -> if (first) {
+                        showChrome()
+                        wantPlayFocus = true
+                    }
+                }
+            }
+            else -> return false
+        }
+        return true
+    }
+
+    /** Holding the key repeats fast; every feed seeking on each repeat would only stall them. */
+    private fun remoteSkip(event: android.view.KeyEvent, deltaMs: Long) {
+        if (event.repeatCount % REMOTE_SKIP_EVERY == 0) skip(deltaMs)
+    }
+
     // Shared playback. The first tile leads; the others follow it.
 
     private fun leaderTile() = tiles.firstOrNull()
@@ -2423,6 +2495,7 @@ class AppState(
         private const val PREF_RECENTS = "recents"
         private const val PREF_HISTORY = "history"
         private val NO_VIDEO_TIERS = setOf("ANONYMOUS", "REG")
+        private const val REMOTE_SKIP_EVERY = 5
         private const val MAX_HISTORY = 300
         private const val MAX_PICKS = 7
         private const val DAY_MS = 86_400_000L

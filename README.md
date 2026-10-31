@@ -14,7 +14,7 @@ Made for the Pixel Fold's inner screen, and works on other Android phones and ta
 ## What it does
 
 - **Multiview, your way.** Up to four feeds (broadcast, F1 Live, onboards, data and tracker
-  channels). Main + strip, grid, or drag and resize freely with magnetic snapping. Save a layout
+  channels), with F1 TV Premium. Main + strip, grid, or drag and resize freely with magnetic snapping. Save a layout
   as your default.
 - **Track map.** Every car on track, as a map you can move, turn and resize, or as a ribbon
   round the edge of the screen. Turn numbers, start and finish lines. Works on replays and live.
@@ -37,6 +37,9 @@ Made for the Pixel Fold's inner screen, and works on other Android phones and ta
   show, press conference, highlights), the build-up before a weekend, and last year's race there.
 - **All of F1 TV's catalog:** shows, documentaries, press conferences and full races from every
   season back to 1981.
+- **Android TV remote:** arrows and select move through everything. While watching, left and right
+  skip 10 seconds, the other arrows and select bring up the controls, and Back hides them. Feeds
+  can't be dragged by hand on a TV; pick a layout instead.
 - **Season calendar** in your local time, with optional reminders before each session.
 
 Tap the **?** in the viewer's top bar for a guide to every gesture.
@@ -48,7 +51,8 @@ Tap the **?** in the viewer's top bar for a guide to every gesture.
 3. Sign in with your F1 TV account.
 
 You need an F1 TV plan that includes video (Pro or Premium); a free F1 TV account can't play
-anything. In the US, F1 TV Premium comes with Apple TV: link your Apple account to your F1 TV
+anything. Watching several feeds at once needs Premium: on Pro, F1 TV doesn't send the extra
+feeds. In the US, F1 TV Premium comes with Apple TV: link your Apple account to your F1 TV
 account on F1 TV's website or app (look for Activate), then sign in to Apexview with that F1 TV
 account.
 

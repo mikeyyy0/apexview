@@ -603,8 +603,9 @@ fun HomeScreen(app: AppState) {
         listOfNotNull(app.featuredWeekend(now)?.let { Pick("${roundLabel(it)} · ${dates(it)}", weekend = it) })
     }
     val count = picks.size
-    // Endless both ways: the pager starts among many copies of the picks.
-    val pager = key(count) { rememberPagerState(initialPage = if (count > 1) count * 500 else 0) { if (count > 1) count * 1000 else count } }
+    // Endless both ways: the pager starts among many copies of the picks. A new first pick (a
+    // session going live) starts it over, so that's what shows even if the count stays the same.
+    val pager = key(count, picks.firstOrNull()?.item?.contentId) { rememberPagerState(initialPage = if (count > 1) count * 500 else 0) { if (count > 1) count * 1000 else count } }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
     // Turns on its own, and waits a full turn again after you swipe.
     LaunchedEffect(pager, pager.settledPage, dragged) {

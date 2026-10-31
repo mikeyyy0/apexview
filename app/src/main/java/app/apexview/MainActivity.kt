@@ -77,6 +77,15 @@ class MainActivity : ComponentActivity() {
                     }
             }
         }
+        // Coming back to the app checks at once, then about once a minute while it's on screen.
+        lifecycleScope.launch {
+            repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+                while (true) {
+                    app.refreshLive()
+                    kotlinx.coroutines.delay(LIVE_CHECK_MS)
+                }
+            }
+        }
         addOnPictureInPictureModeChangedListener { app.setPip(it.isInPictureInPictureMode) }
         ContextCompat.registerReceiver(
             this, pipControls,
@@ -84,6 +93,10 @@ class MainActivity : ComponentActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
     }
+
+    /** Here rather than on a composable: with nothing focused, Compose would never see the key. */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
+        app.onRemoteKey(event) || super.dispatchKeyEvent(event)
 
     /** The pop-out window's buttons, which arrive as broadcasts from the system's window. */
     private val pipControls = object : BroadcastReceiver() {
@@ -150,6 +163,7 @@ fun pipParams(context: Context, tile: Tile?, autoEnter: Boolean, playing: Boolea
         }
         .build()
 
+private const val LIVE_CHECK_MS = 60_000L
 private const val PIP_BACK = "app.apexview.PIP_BACK"
 private const val PIP_PLAY = "app.apexview.PIP_PLAY"
 private const val PIP_FORWARD = "app.apexview.PIP_FORWARD"
@@ -171,23 +185,6 @@ private fun PipSetup(app: AppState) {
     }
 }
 
-/** The pop-out window: just the one feed. */
-@Composable
-private fun PipScreen(app: AppState) {
-    val tile = app.pipTile() ?: return
-    Box(Modifier.fillMaxSize().background(Ink.background)) {
-        AndroidView(
-            factory = { context ->
-                val layout = if (app.settings.softwareDrm) R.layout.player_texture else R.layout.player_surface
-                LayoutInflater.from(context).inflate(layout, null) as PlayerView
-            },
-            update = { it.player = tile.feed.player },
-            onRelease = { it.player = null },
-            modifier = Modifier.fillMaxSize(),
-        )
-    }
-}
-
 @Composable
 private fun Root(app: AppState) {
     PipSetup(app)
@@ -196,6 +193,7 @@ private fun Root(app: AppState) {
         when {
             app.tileMenu != null -> app.closeTileMenu()
             app.mapSheetOpen -> app.mapSheetOpen = false
+            watching && app.picker == null && app.isTv && app.chromeVisible -> app.chromeVisible = false
             watching && app.picker == null -> app.stopAll()
             !app.back() -> Unit
         }
@@ -212,7 +210,6 @@ private fun Root(app: AppState) {
                     label = "viewer",
                 ) { showViewer ->
                     when {
-                        showViewer && app.inPip -> PipScreen(app)
                         showViewer -> ViewerScreen(app)
                         else -> Browse(app)
                     }

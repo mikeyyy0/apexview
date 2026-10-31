@@ -10,9 +10,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextStyle
@@ -87,20 +97,39 @@ fun AppTheme(content: @Composable () -> Unit) {
     )
 }
 
+private const val FOCUS_SCALE = 1.04f
+
 /**
  * Tappable with press feedback on touch-down: a slight shrink that eases back. No ripple,
- * which reads as Android-default rather than designed.
+ * which reads as Android-default rather than designed. Under a remote or keyboard, whatever has
+ * focus grows a little inside a white ring, so it's clear what the select button will press.
  */
 fun Modifier.pressable(enabled: Boolean = true, scaleTo: Float = 0.97f, onClick: () -> Unit): Modifier = composed {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    var focused by remember { mutableStateOf(false) }
+    val ringed = focused && LocalInputModeManager.current.inputMode == InputMode.Keyboard
     val scale by animateFloatAsState(
-        if (pressed && enabled) scaleTo else 1f,
+        if (pressed && enabled) scaleTo else if (ringed) FOCUS_SCALE else 1f,
         tween(Motion.PRESS_MS, easing = EaseOut),
         label = "press",
     )
     this
         .graphicsLayer { scaleX = scale; scaleY = scale }
+        .onFocusChanged { focused = it.isFocused }
+        .drawWithContent {
+            drawContent()
+            if (ringed) {
+                val out = 3.dp.toPx()
+                drawRoundRect(
+                    Color.White,
+                    Offset(-out, -out),
+                    Size(size.width + 2 * out, size.height + 2 * out),
+                    CornerRadius(12.dp.toPx()),
+                    style = Stroke(2.5.dp.toPx()),
+                )
+            }
+        }
         .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
 }
 

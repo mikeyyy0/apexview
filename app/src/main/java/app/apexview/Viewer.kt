@@ -84,6 +84,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -221,6 +225,9 @@ fun ViewerScreen(app: AppState) {
         app.dismissAudioHint()
     }
 
+    // A remote has nothing to point with, so a TV starts on play/pause.
+    LaunchedEffect(Unit) { if (app.isTv) app.wantPlayFocus = true }
+
     val cornerRadius = rememberScreenCornerRadius()
     val cutouts = rememberCutouts()
     // The controls and the feeds move together: one curve, one duration. While arranging the
@@ -233,6 +240,7 @@ fun ViewerScreen(app: AppState) {
         Modifier
             .fillMaxSize()
             .background(Ink.background)
+            .onFocusChanged { app.controlsFocused = it.hasFocus }
             .pointerInput(Unit) { detectTapGestures(onTap = { app.toggleChrome() }) }
     ) {
         val width = constraints.maxWidth.toFloat()
@@ -251,8 +259,9 @@ fun ViewerScreen(app: AppState) {
         )
         // On a wide one, the feeds shrink into the space left of it.
         val sheetSide by animateFloatAsState(if (app.voteSheetOpen && !narrow) 1f else 0f, motion, label = "voteSide")
-        LaunchedEffect(app.layoutRequest) { app.layoutIfRequested(width, height) }
-        LaunchedEffect(width, height) { app.onCanvasResized(width, height) }
+        // The pop-out's tiny window says nothing about the layout; it picks up again on return.
+        LaunchedEffect(app.layoutRequest, app.inPip) { if (!app.inPip) app.layoutIfRequested(width, height) }
+        LaunchedEffect(width, height, app.inPip) { if (!app.inPip) app.onCanvasResized(width, height) }
 
         // Feeds and map, shrinking toward the bottom while the controls are up so nothing sits
         // under the top bar. Touches inside are in the unshrunk canvas's pixels.
@@ -266,7 +275,7 @@ fun ViewerScreen(app: AppState) {
                     transformOrigin = TransformOrigin(0f, 0.5f)
                 }
                 .graphicsLayer {
-                    val s = 1f - lift * band / height
+                    val s = if (app.inPip) 1f else 1f - lift * band / height
                     scaleX = s
                     scaleY = s
                     transformOrigin = TransformOrigin(0.5f, 1f)
@@ -274,9 +283,13 @@ fun ViewerScreen(app: AppState) {
                 }
                 .mapGestures(app, density)
         ) {
+            // The pop-out is this same screen with one feed filling it: the feed keeps its video
+            // surface, so its decoder carries on rather than restarting from the next keyframe.
+            val popped = if (app.inPip) app.pipTile() else null
             app.tiles.forEach { tile ->
-                key(tile.id) { TileView(app, tile) }
+                if (popped == null || tile === popped) key(tile.id) { TileView(app, tile) }
             }
+            if (app.inPip) return@Box
 
             // Laptop mode: the half below the hinge is the timing tower and the map. It rises in
             // as the feeds glide into place and sinks away when the phone opens flat, while the
@@ -323,6 +336,8 @@ fun ViewerScreen(app: AppState) {
             }
         }
 
+        if (app.inPip) return@BoxWithConstraints
+
         // Over the feeds and the map, under the controls; it doesn't shrink with the feeds.
         if (app.radioOpen) app.timing?.let { timing ->
             Box(Modifier.zIndex(CHROME_Z - 1)) { RadioPanel(app, timing, width, height, feedScale = 1f - lift * band / height) }
@@ -352,7 +367,7 @@ fun ViewerScreen(app: AppState) {
             HelpOverlay(app, width, height, feedScale = 1f - lift * band / height, compact = with(density) { minOf(width, height).toDp() } < 600.dp)
         }
         LaunchedEffect(Unit) {
-            if (!app.helpSeen) {
+            if (!app.helpSeen && !app.isTv) {
                 delay(HELP_FIRST_DELAY_MS)
                 if (app.tiles.isNotEmpty()) app.showHelp()
             }
@@ -459,12 +474,12 @@ private fun TopChrome(app: AppState, cutout: Clearance) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
-        Glyph(if (app.arranging) Icons.Rounded.LockOpen else Icons.Rounded.Lock, if (app.arranging) "Lock layout" else "Unlock to move and resize", modifier = Modifier.helpAnchor(app, "lock"), onClick = app::toggleArranging)
+        if (!app.isTv) Glyph(if (app.arranging) Icons.Rounded.LockOpen else Icons.Rounded.Lock, if (app.arranging) "Lock layout" else "Unlock to move and resize", modifier = Modifier.helpAnchor(app, "lock"), onClick = app::toggleArranging)
         Glyph(Icons.Rounded.Add, "Add a feed", modifier = Modifier.helpAnchor(app, "add")) { app.openPickerForPlaying() }
         Glyph(Icons.Rounded.GridView, "Layout: ${app.layoutMode.label}", modifier = Modifier.helpAnchor(app, "layout")) { app.layoutSheetOpen = true; app.showChrome() }
         if (app.timing != null) Glyph(Icons.Rounded.Headset, if (app.radioOpen) "Hide team radio" else "Team radio", modifier = Modifier.helpAnchor(app, "radio-button"), onClick = app::toggleRadio)
         if (app.timing != null || app.mapStatus != null) Glyph(Icons.Rounded.Map, "Track map", modifier = Modifier.helpAnchor(app, "map")) { app.mapSheetOpen = true }
-        Glyph(Icons.Rounded.HelpOutline, "What everything does", 22, onClick = app::showHelp)
+        if (!app.isTv) Glyph(Icons.Rounded.HelpOutline, "What everything does", 22, onClick = app::showHelp)
     }
 }
 
@@ -472,6 +487,13 @@ private fun TopChrome(app: AppState, cutout: Clearance) {
 private fun BottomChrome(app: AppState, cutout: Clearance) {
     var scrubbing by remember { mutableStateOf<Float?>(null) }
     val duration = app.durationMs
+    val playButton = remember { FocusRequester() }
+    LaunchedEffect(app.wantPlayFocus) {
+        if (app.wantPlayFocus) {
+            playButton.requestFocus()
+            app.wantPlayFocus = false
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -486,6 +508,8 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
             Box(Modifier.helpAnchor(app, "scrubber"), contentAlignment = Alignment.CenterStart) {
                 ScrubberFlags(app, duration)
                 AppleSlider(
+                    // A remote skips with left and right; focused, the slider would keep every arrow.
+                    modifier = Modifier.focusProperties { canFocus = false },
                     value = scrubbing ?: (app.positionMs.toFloat() / duration).coerceIn(0f, 1f),
                     onValueChange = { scrubbing = it; app.showChrome() },
                     onValueChangeFinished = {
@@ -507,7 +531,7 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
             Spacer(Modifier.weight(1f))
             Glyph(Icons.Rounded.Replay10, "Back 10 seconds", 28) { app.skip(-10_000) }
             Spacer(Modifier.width(12.dp))
-            Glyph(if (app.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (app.playing) "Pause" else "Play", 36, onClick = app::togglePlay)
+            Glyph(if (app.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (app.playing) "Pause" else "Play", 36, Modifier.focusRequester(playButton), onClick = app::togglePlay)
             Spacer(Modifier.width(12.dp))
             Glyph(Icons.Rounded.Forward10, "Forward 10 seconds", 28) { app.skip(10_000) }
             Spacer(Modifier.weight(1f))
@@ -595,8 +619,12 @@ private fun TileView(app: AppState, tile: Tile) {
 
     Box(
         Modifier
-            .offset { IntOffset(tile.x.roundToInt(), tile.y.roundToInt()) }
-            .requiredSize(with(density) { tile.w.toDp() }, with(density) { tile.h.toDp() })
+            .then(
+                if (app.inPip) Modifier.fillMaxSize()
+                else Modifier
+                    .offset { IntOffset(tile.x.roundToInt(), tile.y.roundToInt()) }
+                    .requiredSize(with(density) { tile.w.toDp() }, with(density) { tile.h.toDp() })
+            )
             .zIndex(tile.z)
             .helpAnchor(app, "tile:${tile.id}")
             .background(Color.Black)
@@ -611,6 +639,7 @@ private fun TileView(app: AppState, tile: Tile) {
             onRelease = { it.player = null },
             modifier = Modifier.fillMaxSize(),
         )
+        if (app.inPip) return@Box
 
         Box(
             Modifier
@@ -808,23 +837,28 @@ private fun TileHeader(app: AppState, tile: Tile) {
                     .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    Modifier.weight(1f, fill = false).pressable { app.openTileMenu(tile); app.showChrome() }.padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    tile.channel.teamColor?.let {
-                        Box(Modifier.size(8.dp).clip(CircleShape).background(Color(it)))
-                        Spacer(Modifier.width(6.dp))
+                // Takes the width left over, so what follows sits at the feed's right edge.
+                Box(Modifier.weight(1f)) {
+                    Row(
+                        Modifier.pressable { app.openTileMenu(tile); app.showChrome() }.padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        tile.channel.teamColor?.let {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(Color(it)))
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(tile.channel.title, Modifier.weight(1f, fill = false), style = Type.footnote.copy(color = Ink.primary, shadow = overlayShadow), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(Icons.Rounded.KeyboardArrowDown, null, tint = Ink.primary, modifier = Modifier.size(18.dp))
+                        if (tile.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = Ink.primary, modifier = Modifier.padding(start = 4.dp).size(14.dp))
                     }
-                    Text(tile.channel.title, style = Type.footnote.copy(color = Ink.primary, shadow = overlayShadow), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Icon(Icons.Rounded.KeyboardArrowDown, null, tint = Ink.primary, modifier = Modifier.size(18.dp))
-                    if (tile.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = Ink.primary, modifier = Modifier.padding(start = 4.dp).size(14.dp))
                 }
-                Spacer(Modifier.weight(1f))
-                val hearing = tile.audible && !app.mutedAll
-                Glyph(if (hearing) Icons.Rounded.VolumeUp else Icons.Rounded.VolumeOff, if (hearing) "Playing audio" else "Play audio from this feed", 20) {
-                    app.setAudio(tile, byUser = true)
-                    app.showChrome()
+                // With one feed there's no audio to move; Mute all is in the controls.
+                if (app.tiles.size > 1) {
+                    val hearing = tile.audible && !app.mutedAll
+                    Glyph(if (hearing) Icons.Rounded.VolumeUp else Icons.Rounded.VolumeOff, if (hearing) "Playing audio" else "Play audio from this feed", 20) {
+                        app.setAudio(tile, byUser = true)
+                        app.showChrome()
+                    }
                 }
                 // The small feeds close from here; the rest close up to fill the space.
                 if (app.tiles.size > 1 && !app.isMainTile(tile)) {
@@ -869,6 +903,8 @@ private fun TileMenuSheet(app: AppState, tile: Tile) {
             Text(tile.channel.title, style = Type.title2)
             Row(Modifier.padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (!tile.audible) SecondaryButton("Play its audio") { app.setAudio(tile); app.closeTileMenu() }
+                // Double-tapping's job, for a remote.
+                if (app.isTv && app.tiles.size > 1) SecondaryButton("Make it the main feed") { app.doubleTap(tile); app.closeTileMenu() }
                 SecondaryButton(if (tile.pinned) "Unpin" else "Pin") { app.togglePin(tile); app.closeTileMenu() }
                 SecondaryButton("Remove") { app.remove(tile) }
             }

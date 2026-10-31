@@ -135,6 +135,9 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
     /** ANONYMOUS, REG, PRO, PREMIUM... from the location endpoint. */
     var tier = "ANONYMOUS"
         private set
+
+    /** Whether the plan gets several feeds in one session, as F1's web app decides it. */
+    val hasMultiview get() = tier in listOf("OPS", "VIP", "PREMIUM")
     private var groupId = 0
     private var playVersion = "3.0"
     private var videoVersion = "4.0"
@@ -584,7 +587,6 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
 
     /** Mirrors the web app's `x-f1-device-info` header (see f1tv-api's device-info.ts). */
     private fun webDeviceInfo(): String {
-        val multiView = tier in listOf("OPS", "VIP", "PREMIUM")
         return listOf(
             "device=web",
             "screen=browser",
@@ -594,7 +596,7 @@ class F1TvApi(private val userAgent: String, private val chromeMajor: String) {
             "osVersion=${Build.VERSION.RELEASE}",
             "appVersion=54.2.1",
             "playerVersion=8.212.0",
-            "p=$multiView",
+            "p=$hasMultiview",
             "tms=1",
         ).joinToString(";")
     }
