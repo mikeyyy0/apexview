@@ -240,8 +240,9 @@ fun SettingsScreen(app: AppState) {
         derivedStateOf { if (list.firstVisibleItemIndex > 0) Float.MAX_VALUE else list.firstVisibleItemScrollOffset.toFloat() }
     }
     val span = with(density) { 50.dp.toPx() }
+    val page = androidx.compose.runtime.remember { androidx.compose.ui.focus.FocusRequester() }
     Box(Modifier.fillMaxSize().background(Ink.background)) {
-    LazyColumn(Modifier.fillMaxSize(), state = list) {
+    LazyColumn(Modifier.fillMaxSize().underTopBar(page), state = list) {
         item {
             Spacer(Modifier.statusBarsPadding().height(60.dp))
             Text("Settings", style = Type.largeTitle, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
@@ -264,6 +265,12 @@ fun SettingsScreen(app: AppState) {
                 Spacer(Modifier.height(6.dp))
                 SwitchRow("Subtitles", s.subtitles, s::updateSubtitles)
                 SwitchRow("Stream stats on tiles", s.showStats, s::updateShowStats)
+            }
+        }
+        item {
+            Group("Onboards", footer = "The speed in the corner of each onboard, from F1's car data.") {
+                ChoiceRow("mph", s.speedUnit == Settings.MPH) { s.updateSpeedUnit(Settings.MPH) }
+                ChoiceRow("km/h", s.speedUnit == Settings.KMH) { s.updateSpeedUnit(Settings.KMH) }
             }
         }
         item {
@@ -327,6 +334,7 @@ fun SettingsScreen(app: AppState) {
         fill = { (scrolled / span).coerceIn(0f, 1f) },
         titleIn = { ((scrolled - span * 0.6f) / (span * 0.4f)).coerceIn(0f, 1f) },
         leading = { backdrop -> GlyphButton(Icons.Rounded.ArrowBackIosNew, "Back", backdrop = backdrop) { app.back() } },
+        below = page,
     )
     }
 }

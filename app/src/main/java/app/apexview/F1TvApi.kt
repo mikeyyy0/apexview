@@ -19,7 +19,10 @@ data class Channel(
     val driverName: String? = null,
     val team: String? = null,
     val teamColor: Int? = null,
-)
+) {
+    /** The main feed and International, which carry F1's timing graphics. */
+    val hasBroadcastGraphics get() = isDefault || title.uppercase().let { "INTERNATIONAL" in it || "F1 LIVE" in it }
+}
 
 /** [isSession]: a practice, qualifying, sprint or race, rather than a show, press conference or highlights. */
 data class VideoInfo(val title: String, val channels: List<Channel>, val session: SessionRef?, val isSession: Boolean = true)

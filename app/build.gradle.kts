@@ -23,8 +23,8 @@ android {
         minSdk = 29
         targetSdk = 35
         // Bump both for every build that goes to the phone, so it's clear which one is installed.
-        versionCode = 76
-        versionName = "0.76"
+        versionCode = 81
+        versionName = "0.81"
         val builtAt = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMM d, HH:mm"))
         buildConfigField("String", "BUILT_AT", "\"$builtAt\"")
         // Where updates come from (owner/repo on GitHub). A fork points this at its own releases.
@@ -71,6 +71,7 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
     }
 
     buildFeatures {
@@ -106,4 +107,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     // Real org.json for JVM tests; android.jar only has stubs.
     testImplementation("org.json:json:20240303")
+    // Compose on the JVM, for what a remote's arrow keys reach.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

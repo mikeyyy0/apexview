@@ -196,12 +196,11 @@ fun RadioPanel(app: AppState, timing: SessionTiming, width: Float, height: Float
                 }
             }
             app.transcriptBlocked?.let { note ->
-                val permission = note == AppState.PERMISSION_NOTE
                 Text(
-                    if (permission) "$note Tap to allow." else note,
+                    "$note Tap to allow.",
                     style = Type.caption,
                     modifier = Modifier
-                        .then(if (permission) Modifier.pressable { ask.launch(android.Manifest.permission.RECORD_AUDIO) } else Modifier)
+                        .pressable { ask.launch(android.Manifest.permission.RECORD_AUDIO) }
                         .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                 )
             }

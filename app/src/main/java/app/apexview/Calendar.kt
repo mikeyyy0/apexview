@@ -80,8 +80,9 @@ fun CalendarScreen(app: AppState) {
         if (index > 2 && !classic) list.scrollToItem(index + 1, -with(density) { 90.dp.roundToPx() }) else list.scrollToItem(0)
     }
 
+    val page = remember { androidx.compose.ui.focus.FocusRequester() }
     Box(Modifier.fillMaxSize().background(Ink.background)) {
-        LazyColumn(Modifier.fillMaxSize(), state = list) {
+        LazyColumn(Modifier.fillMaxSize().underTopBar(page), state = list) {
             item {
                 Spacer(Modifier.statusBarsPadding().height(60.dp))
                 Text(if (classic) "$year season" else "$year calendar", style = Type.largeTitle, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
@@ -130,6 +131,7 @@ fun CalendarScreen(app: AppState) {
                     backdrop = backdrop,
                 ) { remindersOpen = true }
             },
+            below = page,
         )
     }
     if (remindersOpen) RemindersSheet(app) { remindersOpen = false }

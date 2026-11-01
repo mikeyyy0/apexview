@@ -72,6 +72,8 @@ class FeedPlayer(
     var buffering by mutableStateOf(true)
         private set
 
+    private val fit = TileFit()
+
     // Written on the playback thread when the DRM session opens.
     @Volatile private var drmLevel = ""
 
@@ -117,7 +119,11 @@ class FeedPlayer(
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS, DefaultLoadControl.DEFAULT_MAX_BUFFER_MS, 1_000, 2_000)
             .build()
-        player = ExoPlayer.Builder(context).setMediaSourceFactory(sources).setLoadControl(loadControl).build()
+        player = ExoPlayer.Builder(context)
+            .setMediaSourceFactory(sources)
+            .setLoadControl(loadControl)
+            .setTrackSelector(androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context, TileFitSelectionFactory(fit)))
+            .build()
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitles)
             .setPreferredAudioLanguage(commentary)
@@ -212,20 +218,18 @@ class FeedPlayer(
         // In steps, so a tile being dragged bigger doesn't re-ask for tracks every frame.
         val w = (width.coerceAtLeast(1) + 63) / 64 * 64
         val h = (height.coerceAtLeast(1) + 35) / 36 * 36
-        if (on == videoOn && w == viewW && h == viewH) return
-        videoOn = on
         viewW = w
         viewH = h
+        fit.width = w
+        fit.height = h
+        if (on == videoOn) return
+        videoOn = on
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !on)
-            .setViewportSize(w, h, false)
             .build()
     }
 
-    /**
-     * Keeps the picture going at the size it already has: changing size would pick another
-     * rendition and stall the feed, sound included, while it loads.
-     */
+    /** Keeps the picture going at the size it already has, whatever size its window is now. */
     fun keepVideo() {
         if (!videoOn) setVideo(true, viewW.takeIf { it > 1 } ?: 1920, viewH.takeIf { it > 1 } ?: 1080)
     }

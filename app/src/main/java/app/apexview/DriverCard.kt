@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +51,29 @@ private val digits = TextStyle(
     fontFamily = FontFamily.Default,
     fontFeatureSettings = "tnum",
 )
+
+/** The car's speed for an onboard's corner, following the picture the way the card does. */
+@Composable
+fun SpeedReadout(app: AppState, timing: SessionTiming, number: String, modifier: Modifier = Modifier) {
+    LaunchedEffect(timing) { app.loadSpeeds(timing) }
+    val kmh = timing.speeds[number]?.kmhAt(rememberMapTime(app)) ?: return
+    val unit = app.settings.speedUnit
+    Row(
+        modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color.Black.copy(alpha = 0.72f))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text("${speedIn(kmh, unit)}", style = digits.copy(fontSize = 17.sp, fontWeight = FontWeight.Bold))
+        Spacer(Modifier.width(4.dp))
+        Text(
+            if (unit == Settings.KMH) "km/h" else "mph",
+            style = digits.copy(fontSize = 11.sp, color = Color.White.copy(alpha = 0.75f)),
+            modifier = Modifier.padding(bottom = 1.dp),
+        )
+    }
+}
 
 private fun running(ms: Long): String {
     val tenths = ms / 100

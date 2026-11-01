@@ -112,6 +112,7 @@ import kotlin.math.roundToInt
 
 private const val CHROME_Z = 2e9f
 private const val CHROME_HIDE_MS = 4_000L
+private const val POP_OUT_SETTLE_MS = 700L
 /** How far the feeds move down (by shrinking) while the controls are up: the top bar's height. */
 private val CONTROLS_BAND = 56.dp
 private const val AUDIO_HINT_MS = 4_500L
@@ -129,6 +130,8 @@ private const val LIVE_EDGE_MS = 30_000L
 private val CARD_MIN_TILE = 230.dp
 private val CARD_MAX_WIDTH = 250.dp
 private val CARD_MARGIN = 10.dp
+/** What the speed needs beside the card: its own width and the margins. */
+private val SPEED_ROOM = 100.dp
 
 /** Corner radius of the physical screen, so the edge ribbon can follow it. 0 if unknown. */
 @Composable
@@ -170,6 +173,17 @@ private fun rememberCutouts(): List<android.graphics.Rect> {
         }
     }
     return rects
+}
+
+/**
+ * A window under a quarter of the screen is the pop-out's. By area, since on the narrow cover
+ * screen the pop-out is most of the width; split screen is a third of the screen at the least.
+ */
+private fun isPopOutSized(view: android.view.View, width: Float, height: Float): Boolean {
+    val screen = android.graphics.Point()
+    @Suppress("DEPRECATION")
+    (view.display ?: return false).getRealSize(screen)
+    return width * height < screen.x.toFloat() * screen.y * 0.25f
 }
 
 /** Room a row of controls between [top] and [bottom] leaves at its start and end for the camera. */
@@ -260,8 +274,18 @@ fun ViewerScreen(app: AppState) {
         // On a wide one, the feeds shrink into the space left of it.
         val sheetSide by animateFloatAsState(if (app.voteSheetOpen && !narrow) 1f else 0f, motion, label = "voteSide")
         // The pop-out's tiny window says nothing about the layout; it picks up again on return.
-        LaunchedEffect(app.layoutRequest, app.inPip) { if (!app.inPip) app.layoutIfRequested(width, height) }
-        LaunchedEffect(width, height, app.inPip) { if (!app.inPip) app.onCanvasResized(width, height) }
+        // Android doesn't change the window's size and report leaving the pop-out at the same moment,
+        // so its size also counts by itself. Taken for the screen, it left the feeds laid out small.
+        val popOutSized = isPopOutSized(view, width, height)
+        LaunchedEffect(app.layoutRequest, app.inPip, popOutSized) { if (!app.inPip && !popOutSized) app.layoutIfRequested(width, height) }
+        LaunchedEffect(width, height, app.inPip) { if (!app.inPip && !popOutSized) app.onCanvasResized(width, height) }
+        // Once the window has settled after the pop-out, feeds left small are fitted again.
+        LaunchedEffect(app.inPip) {
+            if (!app.inPip) {
+                delay(POP_OUT_SETTLE_MS)
+                app.refitIfShrunk()
+            }
+        }
 
         // Feeds and map, shrinking toward the bottom while the controls are up so nothing sits
         // under the top bar. Touches inside are in the unshrunk canvas's pixels.
@@ -341,6 +365,17 @@ fun ViewerScreen(app: AppState) {
         // Over the feeds and the map, under the controls; it doesn't shrink with the feeds.
         if (app.radioOpen) app.timing?.let { timing ->
             Box(Modifier.zIndex(CHROME_Z - 1)) { RadioPanel(app, timing, width, height, feedScale = 1f - lift * band / height) }
+        }
+
+        // No feed on screen with F1's graphics: the time left goes up top, clear of the edge map
+        // and below the controls when they're up. Laptop mode has it in its lower panel.
+        if (app.countdownOverScreen) app.timing?.let { timing ->
+            val below by animateDpAsState(if (app.chromeVisible) 72.dp else 38.dp, tween(Motion.SCREEN_MS, easing = EaseOut), label = "countdown")
+            SessionCountdown(
+                app, timing,
+                Type.title2.copy(shadow = overlayShadow),
+                Modifier.zIndex(CHROME_Z - 1).align(Alignment.TopCenter).padding(top = below),
+            )
         }
 
         val fade = motion
@@ -678,11 +713,22 @@ private fun TileView(app: AppState, tile: Tile) {
                     .width(minOf(CARD_MAX_WIDTH, tileWidth - CARD_MARGIN * 2)),
             )
         }
+        if (number != null && timing != null && !app.arranging) {
+            // On a feed too narrow for both, it sits above the card rather than on it.
+            val overCard = timing.laps.isNotEmpty() && tileWidth in CARD_MIN_TILE..(CARD_MAX_WIDTH + SPEED_ROOM)
+            SpeedReadout(
+                app, timing, number,
+                Modifier.align(Alignment.BottomEnd).padding(
+                    end = CARD_MARGIN,
+                    bottom = if (overCard) 66.dp else if (app.settings.showStats) 28.dp else CARD_MARGIN,
+                ),
+            )
+        }
 
         val fade = tween<Float>(Motion.SCREEN_MS, easing = EaseOut)
         AnimatedVisibility(
             app.audioHint === tile,
-            Modifier.align(Alignment.BottomEnd).padding(end = 52.dp, bottom = 10.dp),
+            Modifier.align(Alignment.BottomEnd).padding(end = 52.dp, bottom = if (number != null) 46.dp else 10.dp),
             enter = fadeIn(fade), exit = fadeOut(tween(600, easing = EaseOut)),
         ) {
             Row(

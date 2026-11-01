@@ -299,7 +299,7 @@ class AppState(
             }
             val cooling = thermal >= android.os.PowerManager.THERMAL_STATUS_CRITICAL && tile !== main
             tile.coolingOff = visible && cooling
-            // The pop-out stays on the rendition it has: another would stall it going in and coming back.
+            // The pop-out stays on the rendition it has, ready for coming back.
             if (inPip && visible && !cooling) {
                 tile.feed.keepVideo()
                 return@forEach
@@ -714,7 +714,8 @@ class AppState(
     /**
      * Notes a few more seconds of [contentId] watched. A session counts as watched once the
      * picture is past its chequered flag, live or replay: the stream runs on well after it (the
-     * podium, interviews), and few sit through that. Anything without timing counts at 90%.
+     * podium, interviews), and few sit through that. Anything without timing counts at 90%. Live
+     * qualifying doesn't count by its flag: each part has one, and more of it may be to come.
      */
     private fun noteSeen(contentId: Long, positionMs: Long, durationMs: Long, live: Boolean) {
         val now = System.currentTimeMillis()
@@ -722,7 +723,7 @@ class AppState(
         // Saves come every few seconds while watching; a longer gap was time away.
         val gap = before?.let { now - it.at }?.takeIf { it in 0..15_000 } ?: 0
         val watched = (before?.watchedMs ?: 0) + gap
-        val flag = timing?.finishedUtc?.takeIf { timingContentId == contentId }
+        val flag = timing?.takeIf { timingContentId == contentId && !(live && it.showsPushLaps) }?.finishedUtc
         val pastFlag = flag != null && (mapTimeMs() ?: 0L) >= flag
         val finished = before?.finished == true || pastFlag ||
             (!live && durationMs > 0 && positionMs >= durationMs * 9 / 10)
@@ -748,7 +749,8 @@ class AppState(
             if (item.contentId > 0 && fresh(item) && used.add(item.contentId)) picks += Pick(reason, item = item)
         }
 
-        liveNow.forEach { add("Live now", it) }
+        // Always, watched or not: it's still going.
+        liveNow.filter { it.contentId > 0 && used.add(it.contentId) }.forEach { picks += Pick("Live now", item = it) }
 
         // F1 TV's own picks in its order, ahead of anything from your history.
         homePage?.featured?.forEach { add("Featured on F1 TV", it) }
@@ -1146,6 +1148,7 @@ class AppState(
     private fun loadTiming(contentId: Long) {
         timingContentId = contentId
         timing = null
+        speedsJob?.cancel()
         val ref = sessionRefs[contentId]
         val token = api.ascendon
         if (ref == null || token == null) {
@@ -1170,6 +1173,26 @@ class AppState(
                 mapStatus = if (loaded.outline.isEmpty()) "Couldn't trace the track; showing cars only" else null
             } catch (e: Exception) {
                 if (timingContentId == contentId) mapStatus = "Map unavailable: ${e.message}"
+            }
+        }
+    }
+
+    private var speedsJob: kotlinx.coroutines.Job? = null
+    private var speedsFor: SessionTiming? = null
+
+    /** A replay's car speeds, fetched the first time an onboard wants them. Without them, no speed shows. */
+    fun loadSpeeds(session: SessionTiming) {
+        if (session.live || speedsFor === session) return
+        val token = api.ascendon ?: return
+        speedsFor = session
+        speedsJob?.cancel()
+        speedsJob = scope.launch {
+            try {
+                session.speeds = LiveTimingArchive(token, userAgent).loadSpeeds(session.radioBase)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("ApexviewLive", "car data: ${e.message}")
             }
         }
     }
@@ -1595,8 +1618,10 @@ class AppState(
      */
     private fun keepMapOnScreen() {
         if (canvasW <= 0f) return
-        for (panel in listOf(mapPanel, laptopMapPanel)) {
-            if (!panel.placed) continue
+        // Only the one in use: on the narrow cover screen, this pushed laptop mode's map to the left,
+        // over the timing tower, where unfolding found it.
+        activeMapPanel.let { panel ->
+            if (!panel.placed) return
             panel.w = panel.w.coerceAtMost(canvasW)
             panel.h = panel.h.coerceAtMost(canvasH)
             panel.x = panel.x.coerceIn(0f, canvasW - panel.w)
@@ -1765,7 +1790,7 @@ class AppState(
     /** The clip being transcribed now. */
     var transcribing by mutableStateOf<String?>(null)
         private set
-    /** Why transcripts can't be made, when they can't; null while they can. */
+    /** The permission note, while transcripts need the viewer to allow something; null otherwise. */
     var transcriptBlocked by mutableStateOf<String?>(null)
         private set
     private val failedClips = mutableSetOf<String>()
@@ -1775,14 +1800,13 @@ class AppState(
      * (the timing feed runs ahead of the picture, so a clip is usually done before it shows).
      */
     suspend fun transcribeRadio() {
-        if (!transcriber.available) {
-            transcriptBlocked = NO_RECOGNISER_NOTE
-            return
-        }
+        // Without a recogniser, clips just play.
+        if (!transcriber.available) return
         while (true) {
             val t = timing
             val now = mapTimeMs()
-            val next = if (t == null || now == null || transcriptBlocked != null) null else t.radio
+            val waiting = transcriptBlocked != null || System.currentTimeMillis() < transcribeAgainAt
+            val next = if (t == null || now == null || waiting) null else t.radio
                 .filter { it.path !in transcripts && it.path !in failedClips && it.utc <= now + TRANSCRIBE_AHEAD_MS }
                 .minByOrNull { abs(it.utc - now) }
             if (next == null || t == null) {
@@ -1807,9 +1831,12 @@ class AppState(
             } catch (e: Exception) {
                 android.util.Log.w("ApexviewRadio", "transcribe ${next.path}: ${e.message}")
                 failedClips += next.path
-                // Several in a row means the recogniser can't do it at all: say so, and stop trying.
+                // Several in a row: it may only be a bad moment for the recogniser, so wait and try
+                // those clips again. Nothing to say about it; the clips still play.
                 if (++radioFailuresInRow >= 3) {
-                    transcriptBlocked = "This phone's speech recogniser couldn't transcribe the clips (${(e as? RecogniserError)?.let { RecogniserError.name(it.code) } ?: e.message}). They still play."
+                    radioFailuresInRow = 0
+                    failedClips.clear()
+                    transcribeAgainAt = System.currentTimeMillis() + TRANSCRIBE_RETRY_MS
                 }
             } finally {
                 transcribing = null
@@ -1824,6 +1851,7 @@ class AppState(
             .filter { it.isNotBlank() }
 
     private var radioFailuresInRow = 0
+    private var transcribeAgainAt = 0L
 
     /** After the user allows the permission the recogniser asked for. */
     fun retryTranscripts() {
@@ -1954,6 +1982,20 @@ class AppState(
         }
     }
 
+    /**
+     * Back from the pop-out with every feed bunched in a corner, however that came about: they were
+     * laid out for its small window, so they get a fresh fit. Any real layout reaches further.
+     */
+    fun refitIfShrunk() {
+        if (tiles.isEmpty() || canvasW <= 0f || arranging || laptopActive || focusTileId != null) return
+        val reach = SHRUNK_REACH
+        if (tiles.maxOf { it.x + it.w } < canvasW * reach && tiles.maxOf { it.y + it.h } < canvasH * reach) {
+            arrangements.remove(screenKey(canvasW, canvasH))
+            handPlaced = false
+            layoutRequest++
+        }
+    }
+
     /** Pulls tiles back so each one is at least partly on screen. */
     fun keepOnScreen(width: Float, height: Float) {
         // Feeds tucked away behind a full-screen one stay tucked away.
@@ -2026,13 +2068,22 @@ class AppState(
     /** Laptop mode is on screen now. */
     val laptopActive get() = laptopEnabled && hinge != null && tiles.isNotEmpty()
 
+    /** Onboards have no clock of their own; the main feed and International carry F1's graphics. */
+    val countdownOverScreen get() = !laptopActive &&
+        tiles.none { (focusTileId == null || it.id == focusTileId) && it.channel.hasBroadcastGraphics }
+
     /** From the activity: the fold's posture changed. */
     fun updatePosture(newHinge: Pair<Float, Float>?) {
         val was = laptopActive
         hinge = newHinge
         // The first time the phone is held like a laptop while watching, ask.
         if (newHinge != null && tiles.isNotEmpty() && !prefs.getBoolean(PREF_LAPTOP_ASKED, false)) laptopPromptOpen = true
-        if (laptopActive != was) relayoutGliding()
+        if (laptopActive != was) {
+            // Fold and hinge news arrive apart, so laptop mode may look active on a screen that
+            // isn't its own. Going into it puts its map back where it was last left.
+            if (laptopActive) laptopMapPanel.placed = false
+            relayoutGliding()
+        }
     }
 
     fun answerLaptopPrompt(use: Boolean) {
@@ -2300,6 +2351,8 @@ class AppState(
         playing = true
         timing = null
         timingContentId = null
+        speedsJob?.cancel()
+        speedsFor = null
         radioPlayer?.release()
         radioPlayer = null
         radioPlaying = null
@@ -2488,14 +2541,14 @@ class AppState(
         const val NO_WORDS = "(no words recognised)"
         const val PERMISSION_NOTE =
             "Android's speech recogniser needs the microphone permission to transcribe. The app never records you."
-        const val NO_RECOGNISER_NOTE =
-            "This phone has no speech recogniser Apexview can use (it needs Android 13 or later), so clips play but aren't transcribed."
+        private const val TRANSCRIBE_RETRY_MS = 120_000L
         /** The feeds' volume while a radio clip plays: silent, so the radio is clear. */
         private const val RADIO_DUCK = 0f
         private const val PREF_RECENTS = "recents"
         private const val PREF_HISTORY = "history"
         private val NO_VIDEO_TIERS = setOf("ANONYMOUS", "REG")
         private const val REMOTE_SKIP_EVERY = 5
+        private const val SHRUNK_REACH = 0.8f
         private const val MAX_HISTORY = 300
         private const val MAX_PICKS = 7
         private const val DAY_MS = 86_400_000L

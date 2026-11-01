@@ -60,25 +60,59 @@ fun LaptopPanel(app: AppState, timing: SessionTiming?, modifier: Modifier) {
     // The tower takes the left; the map is a window of its own over the right (see Viewer).
     Row(modifier.background(Ink.background)) {
         Column(Modifier.weight(AppState.LAPTOP_TOWER_SHARE).fillMaxHeight()) {
-            // An onboard is up top: one tap back to the broadcast it replaced.
-            app.laptopReturnChannel?.let { channel ->
-                Row(
-                    Modifier.pressable { app.returnToBroadcast() }.padding(start = 16.dp, top = 12.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    androidx.compose.material3.Icon(
-                        androidx.compose.material.icons.Icons.Rounded.ArrowBackIosNew, null,
-                        tint = Ink.primary, modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Back to ${broadcastName(channel)}", style = Type.headline)
+            Row(Modifier.fillMaxWidth().padding(end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                // An onboard is up top: one tap back to the broadcast it replaced.
+                app.laptopReturnChannel?.let { channel ->
+                    Row(
+                        Modifier.pressable { app.returnToBroadcast() }.padding(start = 16.dp, top = 12.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.Icon(
+                            androidx.compose.material.icons.Icons.Rounded.ArrowBackIosNew, null,
+                            tint = Ink.primary, modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Back to ${broadcastName(channel)}", style = Type.headline)
+                    }
                 }
+                Spacer(Modifier.weight(1f))
+                timing?.let { SessionCountdown(app, it, Type.title2, Modifier.padding(top = 8.dp)) }
             }
             if (timing != null && timing.laps.isNotEmpty()) TimingTower(app, timing)
             else Text(app.mapStatus ?: "No timing for this session.", style = Type.footnote, modifier = Modifier.padding(20.dp))
         }
         Spacer(Modifier.weight(1f - AppState.LAPTOP_TOWER_SHARE))
     }
+}
+
+/**
+ * The time left in a session that runs on time, as "Q2 12:34", following the picture's clock. Dims
+ * while the clock is stopped, and goes at the chequered flag. Races have laps, not a countdown.
+ */
+@Composable
+fun SessionCountdown(app: AppState, timing: SessionTiming, style: TextStyle, modifier: Modifier = Modifier) {
+    if (timing.isRace) return
+    var now by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = app.mapTimeMs() ?: 0L
+            delay(250)
+        }
+    }
+    if (now == 0L) return
+    val reading = timing.clock.at(now) ?: return
+    val flag = timing.finishedUtc
+    if (reading.remainingMs == 0L && flag != null && now >= flag) return
+    val seconds = (reading.remainingMs + 999) / 1000
+    val time = if (seconds >= 3600) "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    else "%d:%02d".format(seconds / 60, seconds % 60)
+    val part = reading.part?.takeIf { timing.showsPushLaps }?.let { (if (timing.name.contains("Sprint", ignoreCase = true)) "SQ" else "Q") + it + " " }.orEmpty()
+    Text(
+        part + time,
+        style = style.copy(color = if (reading.running) Ink.primary else Ink.secondary, fontFeatureSettings = "tnum"),
+        maxLines = 1,
+        modifier = modifier,
+    )
 }
 
 /** Every driver in running order: last lap, gap to the leader, interval, tyre. Tap a row for their onboard. */

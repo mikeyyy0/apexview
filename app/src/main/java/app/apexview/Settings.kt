@@ -25,14 +25,22 @@ class Settings(context: Context) {
     var votePrompt by mutableStateOf(prefs.getBoolean("votePrompt", true))
         private set
 
+    /** The onboards' speed, in [MPH] or [KMH]. */
+    var speedUnit by mutableStateOf(prefs.getString("speedUnit", MPH) ?: MPH)
+        private set
+
     fun updatePlatform(value: String) { platform = value; prefs.edit().putString("platform", value).apply() }
     fun updateSoftwareDrm(value: Boolean) { softwareDrm = value; prefs.edit().putBoolean("softwareDrm", value).apply() }
     fun updateSubtitles(value: Boolean) { subtitles = value; prefs.edit().putBoolean("subtitles", value).apply() }
     fun updateCommentary(value: String) { commentary = value; prefs.edit().putString("commentary", value).apply() }
     fun updateShowStats(value: Boolean) { showStats = value; prefs.edit().putBoolean("showStats", value).apply() }
     fun updateVotePrompt(value: Boolean) { votePrompt = value; prefs.edit().putBoolean("votePrompt", value).apply() }
+    fun updateSpeedUnit(value: String) { speedUnit = value; prefs.edit().putString("speedUnit", value).apply() }
 
     companion object {
+        const val MPH = "mph"
+        const val KMH = "kmh"
+
         /** F1 TV's commentary languages, by ISO 639-1 code. */
         val COMMENTARY = listOf(
             "en" to "English",

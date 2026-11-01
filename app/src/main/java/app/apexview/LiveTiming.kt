@@ -1,7 +1,11 @@
 package app.apexview
 
 import android.graphics.Color
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -12,6 +16,7 @@ import java.time.Instant
 import java.util.Base64
 import java.util.zip.Inflater
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /** Which archived session a replay belongs to, from F1 TV's video metadata. */
 data class SessionRef(
@@ -254,6 +259,47 @@ class StateLog(private val t: LongArray, private val s: Array<LapState>) {
     }
 }
 
+/** A car's speed through a session, as F1's car data gives it (km/h, a few times a second). */
+class SpeedLog(private val t: LongArray, private val v: ShortArray, private val n: Int) {
+    /** The latest reading at [utcMs]. Null before the first, and once they've stopped coming. */
+    fun kmhAt(utcMs: Long): Int? {
+        if (n == 0 || utcMs < t[0]) return null
+        var lo = 0
+        var hi = n
+        while (hi - lo > 1) {
+            val mid = (lo + hi) ushr 1
+            if (t[mid] <= utcMs) lo = mid else hi = mid
+        }
+        return if (utcMs - t[lo] > STALE_MS) null else v[lo].toInt()
+    }
+
+    private companion object {
+        const val STALE_MS = 5_000L
+    }
+}
+
+class SpeedBuilder {
+    private var t = LongArray(4096)
+    private var v = ShortArray(4096)
+    private var size = 0
+
+    fun add(time: Long, kmh: Int) {
+        if (size > 0 && time <= t[size - 1]) return
+        if (size == t.size) {
+            t = t.copyOf(size * 2)
+            v = v.copyOf(size * 2)
+        }
+        t[size] = time
+        v[size] = kmh.toShort()
+        size++
+    }
+
+    fun build() = SpeedLog(t, v, size)
+}
+
+/** A speed in the unit chosen in Settings. */
+internal fun speedIn(kmh: Int, unit: String) = if (unit == Settings.KMH) kmh else (kmh * 0.621371).roundToInt()
+
 class SessionTiming(
     val type: String,
     val drivers: Map<String, DriverInfo>,
@@ -289,8 +335,15 @@ class SessionTiming(
     /** Live only: the leader's lap and the race distance, from F1's lap counter. */
     val currentLap: Int? = null,
     val totalLaps: Int? = null,
+    /** The session's countdown, for sessions that run on time. */
+    val clock: SessionClock = SessionClock.NONE,
+    /** Live: the feed brings the cars' speeds. A replay's come from the archive when first wanted. */
+    val live: Boolean = false,
 ) {
     val geometry = TrackGeometry(outline)
+
+    /** Each car's speed, by racing number. */
+    var speeds by mutableStateOf<Map<String, SpeedLog>>(emptyMap())
 
     /**
      * Where the race starts, as the fraction of a lap after the finish line (the outline's first
@@ -306,6 +359,30 @@ class SessionTiming(
 
     /** Flying-lap highlights only mean something in qualifying. */
     val showsPushLaps get() = type.contains("Qualifying", ignoreCase = true)
+}
+
+/** The countdown at one moment: what's left, whether it's running, and the part of qualifying. */
+class ClockReading(val remainingMs: Long, val running: Boolean, val part: Int?)
+
+/**
+ * F1's session clock. It only says what the clock read at a moment and whether it was running from
+ * there; red flags stop it, and each part of qualifying sets it again. Read at the picture's time,
+ * it matches what's on screen rather than the timing that runs ahead of it.
+ */
+class SessionClock(private val marks: List<Mark>, private val parts: List<Pair<Long, Int>> = emptyList()) {
+    class Mark(val utc: Long, val remainingMs: Long, val running: Boolean)
+
+    fun at(utc: Long): ClockReading? {
+        if (marks.isEmpty()) return null
+        // Before the first mark (a live picture behind it), it's run back from that mark.
+        val mark = marks.lastOrNull { it.utc <= utc } ?: marks.first()
+        val left = if (mark.running) mark.remainingMs - (utc - mark.utc) else mark.remainingMs
+        return ClockReading(left.coerceAtLeast(0), mark.running, (parts.lastOrNull { it.first <= utc } ?: parts.firstOrNull())?.second)
+    }
+
+    companion object {
+        val NONE = SessionClock(emptyList())
+    }
 }
 
 /** Lap states per driver, plus every moment a car crossed the line (to locate it). */
@@ -378,6 +455,9 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
             tyres = tyres,
             marshalSectors = circuit?.sectors.orEmpty(),
             flags = flags,
+            clock = runCatching {
+                SessionClock(parseClock(fetch(path + "ExtrapolatedClock.jsonStream"), streamStart), parseParts(timingStream.orEmpty(), streamStart))
+            }.getOrDefault(SessionClock.NONE),
         ).also { it.startLine = grid?.startLine }
     }
 
@@ -526,6 +606,43 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
             val code = runCatching { JSONObject(line.substring(TS_LENGTH)).optString("Status").toInt() }.getOrNull()
                 ?: return@mapNotNull null
             streamStart + offsetMs(line) to code
+        }.toList()
+
+    /**
+     * ExtrapolatedClock.jsonStream: lines of Utc, Remaining ("00:17:59") and Extrapolating, any of
+     * which a line can leave out. Without Remaining, the clock reads what it had counted down to.
+     */
+    internal fun parseClock(stream: String, streamStart: Long): List<SessionClock.Mark> {
+        val marks = mutableListOf<SessionClock.Mark>()
+        stream.lineSequence().forEach { line ->
+            if (line.length <= TS_LENGTH) return@forEach
+            val json = runCatching { JSONObject(line.substring(TS_LENGTH)) }.getOrNull() ?: return@forEach
+            val utc = json.optString("Utc").takeIf { it.isNotEmpty() }
+                ?.let { text -> runCatching { java.time.Instant.parse(if (text.endsWith("Z")) text else text + "Z").toEpochMilli() }.getOrNull() }
+                ?: (streamStart + offsetMs(line))
+            val last = marks.lastOrNull()
+            val remaining = json.optString("Remaining").takeIf { it.isNotEmpty() }?.let(::clockMs)
+                ?: last?.let { if (it.running) (it.remainingMs - (utc - it.utc)).coerceAtLeast(0) else it.remainingMs }
+                ?: return@forEach
+            val running = if (json.has("Extrapolating")) json.optBoolean("Extrapolating") else last?.running ?: false
+            marks += SessionClock.Mark(utc, remaining, running)
+        }
+        return marks.sortedBy { it.utc }
+    }
+
+    /** "00:17:59" in ms. */
+    private fun clockMs(text: String): Long? {
+        val parts = text.split(":").map { it.toDoubleOrNull() ?: return null }
+        if (parts.size != 3) return null
+        return ((parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000).toLong()
+    }
+
+    /** Which part of qualifying is running, as TimingData says when it changes. */
+    internal fun parseParts(stream: String, streamStart: Long): List<Pair<Long, Int>> =
+        stream.lineSequence().mapNotNull { line ->
+            if (line.length <= TS_LENGTH) return@mapNotNull null
+            val part = SESSION_PART.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: return@mapNotNull null
+            streamStart + offsetMs(line) to part
         }.toList()
 
     internal class Grid(val startLine: Float, val lightsOutUtc: Long)
@@ -740,6 +857,37 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         return tracks
     }
 
+    /**
+     * A replay's car speeds. A large file, and only onboards show them, so it's read line by line
+     * once one is on screen rather than holding up the map.
+     */
+    suspend fun loadSpeeds(base: String): Map<String, SpeedLog> = withContext(Dispatchers.IO) {
+        val cars = mutableMapOf<String, SpeedBuilder>()
+        open(base.removePrefix(BASE) + "CarData.z.jsonStream").bufferedReader().useLines { lines ->
+            lines.forEach { line ->
+                ensureActive()
+                val text = line.removePrefix("\uFEFF")
+                if (text.length <= TS_LENGTH) return@forEach
+                runCatching { JSONObject(inflate(text.substring(TS_LENGTH))) }.getOrNull()?.let { addCarData(it, cars) }
+            }
+        }
+        cars.mapValues { it.value.build() }
+    }
+
+    /** One decoded CarData message (archive line or live update): channel 2 is the speed. */
+    internal fun addCarData(json: JSONObject, cars: MutableMap<String, SpeedBuilder>) {
+        val entries = json.optJSONArray("Entries") ?: return
+        for (i in 0 until entries.length()) {
+            val entry = entries.getJSONObject(i)
+            val time = runCatching { Instant.parse(entry.getString("Utc")).toEpochMilli() }.getOrNull() ?: continue
+            val list = entry.optJSONObject("Cars") ?: continue
+            list.keys().forEach { number ->
+                val kmh = list.optJSONObject(number)?.optJSONObject("Channels")?.optInt("2", -1) ?: -1
+                if (kmh >= 0) cars.getOrPut(number) { SpeedBuilder() }.add(time, kmh)
+            }
+        }
+    }
+
     /** One decoded Position message (archive line or live update) onto the cars' tracks. */
     internal fun addPositions(json: JSONObject, tracks: MutableMap<String, TrackBuilder>) {
         val samples = json.optJSONArray("Position") ?: return
@@ -837,20 +985,19 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         return best ?: FloatArray(0)
     }
 
-    private fun fetch(path: String): String {
+    private fun fetch(path: String): String =
+        open(path).use { it.readBytes() }.toString(Charsets.UTF_8).removePrefix("﻿")
+
+    private fun open(path: String): java.io.InputStream {
         val conn = URL(BASE + path).openConnection() as HttpURLConnection
-        try {
-            conn.connectTimeout = 15_000
-            conn.readTimeout = 60_000
-            conn.setRequestProperty("User-Agent", userAgent)
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            val code = conn.responseCode
-            if (code == 401 || code == 403) throw IOException("F1's timing archive refused the login (HTTP $code)")
-            if (code >= 400) throw IOException("HTTP $code for ${path.substringAfterLast('/')}")
-            return conn.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8).removePrefix("﻿")
-        } finally {
-            conn.disconnect()
-        }
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 60_000
+        conn.setRequestProperty("User-Agent", userAgent)
+        conn.setRequestProperty("Authorization", "Bearer $token")
+        val code = conn.responseCode
+        if (code == 401 || code == 403) throw IOException("F1's timing archive refused the login (HTTP $code)")
+        if (code >= 400) throw IOException("HTTP $code for ${path.substringAfterLast('/')}")
+        return conn.inputStream
     }
 
     internal fun inflate(quoted: String): String {
@@ -886,6 +1033,7 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     companion object {
         internal const val BASE = "https://livetiming.formula1.com/static/"
         private const val TS_LENGTH = 12
+        private val SESSION_PART = Regex("\"SessionPart\":(\\d+)")
         /** A video may start a little before its session officially does (build-up). */
         private const val SESSION_SLACK_MS = 30 * 60_000L
         /** A session plus its build-up and aftermath: a video this long after a start still belongs to it. */

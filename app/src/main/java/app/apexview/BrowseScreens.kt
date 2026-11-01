@@ -85,7 +85,12 @@ import androidx.compose.ui.platform.LocalDensity
 import coil.request.ImageRequest
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.key
@@ -276,10 +281,16 @@ internal fun TopBar(
     titleIn: () -> Float,
     leading: (@Composable (backdrop: Float) -> Unit)? = null,
     trailing: (@Composable (backdrop: Float) -> Unit)? = null,
+    /**
+     * The page under the bar, marked with [underTopBar]. It starts above the bar's buttons, so a
+     * remote's down arrow finds nothing below them unless it's told where to go.
+     */
+    below: FocusRequester? = null,
 ) {
     Box(
         Modifier
             .fillMaxWidth()
+            .focusProperties { if (below != null) down = below }
             .drawBehind { drawRect(Color.Black.copy(alpha = 0.82f * fill())) }
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
             .height(60.dp)
@@ -300,13 +311,16 @@ internal fun TopBar(
     }
 }
 
+/** The scrolling page a [TopBar] lies over: where the remote's down arrow goes from the bar. */
+internal fun Modifier.underTopBar(requester: FocusRequester) = focusRequester(requester).focusGroup()
+
 /**
  * A page led by artwork, after Apple's TV app: the artwork stays put while the page scrolls up
  * over it, darkening as it goes, and the top bar forms out of nothing as you scroll. [artKey]
  * links the artwork to the card it was opened from, so one grows into the other.
  */
 @Composable
-private fun ArtPage(
+internal fun ArtPage(
     image: String?,
     artKey: String?,
     title: String,
@@ -323,6 +337,7 @@ private fun ArtPage(
     val density = LocalDensity.current
     val context = LocalContext.current
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val page = remember { FocusRequester() }
     BoxWithConstraints(Modifier.fillMaxSize().background(Ink.background)) {
         val heroHeight = minOf(maxWidth * 9f / 16f, screenHeight * 0.62f).coerceAtLeast(320.dp)
         val heroPx = with(density) { heroHeight.toPx() }
@@ -372,7 +387,7 @@ private fun ArtPage(
             )
         }
 
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().underTopBar(page), contentPadding = PaddingValues(bottom = 40.dp)) {
             item {
                 Box(Modifier.fillMaxWidth().height(heroHeight)) {
                     if (heroBox != null) heroBox()
@@ -391,6 +406,7 @@ private fun ArtPage(
             titleIn = { ((scrolled - heroPx * 0.62f) / (heroPx * 0.2f)).coerceIn(0f, 1f) },
             leading = leading,
             trailing = trailing,
+            below = page,
         )
     }
 }
@@ -607,9 +623,11 @@ fun HomeScreen(app: AppState) {
     // session going live) starts it over, so that's what shows even if the count stays the same.
     val pager = key(count, picks.firstOrNull()?.item?.contentId) { rememberPagerState(initialPage = if (count > 1) count * 500 else 0) { if (count > 1) count * 1000 else count } }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
+    // A remote on one of the slide's buttons: turning would take the button away from under it.
+    var heroFocused by remember { mutableStateOf(false) }
     // Turns on its own, and waits a full turn again after you swipe.
-    LaunchedEffect(pager, pager.settledPage, dragged) {
-        if (count < 2 || dragged) return@LaunchedEffect
+    LaunchedEffect(pager, pager.settledPage, dragged, heroFocused) {
+        if (count < 2 || dragged || heroFocused) return@LaunchedEffect
         delay(CAROUSEL_MS)
         pager.animateScrollToPage(pager.currentPage + 1, animationSpec = tween(Motion.SCREEN_MS * 2, easing = EaseOut))
     }
@@ -635,7 +653,7 @@ fun HomeScreen(app: AppState) {
         backdrop = { CarouselArt(picks, pager) },
         heroBox = {
             if (count > 0) {
-                HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
+                HorizontalPager(state = pager, modifier = Modifier.fillMaxSize().onFocusChanged { heroFocused = it.hasFocus }) { page ->
                     Box(Modifier.fillMaxSize()) {
                         Column(
                             Modifier
@@ -659,6 +677,28 @@ fun HomeScreen(app: AppState) {
             }
         }
 
+        fun continueWatching() {
+            app.recents.toList().takeIf { it.isNotEmpty() && app.tiles.isEmpty() }?.let { recents ->
+                item {
+                    Shelf(app, "Continue watching", recents) { it, width ->
+                        val left = (it.durationMs - it.positionMs).coerceAtLeast(0) / 1000
+                        val weekend = it.title.substringBefore(" · ")
+                        ArtCard(
+                            it.image,
+                            it.title.substringAfter(" · "),
+                            if (it.live) "$weekend · Live"
+                            else "$weekend · " + (if (left >= 3600) "${left / 3600}h ${left / 60 % 60}m left" else "${left / 60}m left"),
+                            width,
+                            live = it.live,
+                            progress = if (it.live || it.durationMs <= 0) null else it.positionMs.toFloat() / it.durationMs,
+                            onClick = { app.resumeWatching(it) },
+                        )
+                    }
+                    Spacer(Modifier.height(28.dp))
+                }
+            }
+        }
+
         item { Spacer(Modifier.height(20.dp)) }
 
         // The carousel leads with what's live; a row only when there's more than one.
@@ -672,6 +712,9 @@ fun HomeScreen(app: AppState) {
                 Spacer(Modifier.height(28.dp))
             }
         }
+
+        // During a live session, getting back to it comes first.
+        if (app.liveNow.isNotEmpty()) continueWatching()
 
         if (latest != null && latestContent != null && latestContent.schedule.isNotEmpty()) {
             // The weekend's schedule under the carousel, as on F1 TV's home page, until the weekend ends.
@@ -705,25 +748,7 @@ fun HomeScreen(app: AppState) {
             item { VideoShelf(app, title, items) }
         }
 
-        app.recents.toList().takeIf { it.isNotEmpty() && app.tiles.isEmpty() }?.let { recents ->
-            item {
-                Shelf(app, "Continue watching", recents) { it, width ->
-                    val left = (it.durationMs - it.positionMs).coerceAtLeast(0) / 1000
-                    val weekend = it.title.substringBefore(" · ")
-                    ArtCard(
-                        it.image,
-                        it.title.substringAfter(" · "),
-                        if (it.live) "$weekend · Live"
-                        else "$weekend · " + (if (left >= 3600) "${left / 3600}h ${left / 60 % 60}m left" else "${left / 60}m left"),
-                        width,
-                        live = it.live,
-                        progress = if (it.live || it.durationMs <= 0) null else it.positionMs.toFloat() / it.durationMs,
-                        onClick = { app.resumeWatching(it) },
-                    )
-                }
-                Spacer(Modifier.height(28.dp))
-            }
-        }
+        if (app.liveNow.isEmpty()) continueWatching()
 
         item {
             Shelf(app, "${app.season} season", app.pastWeekends(now)) { w, width ->

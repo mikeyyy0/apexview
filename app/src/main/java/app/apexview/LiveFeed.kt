@@ -61,6 +61,7 @@ class LiveTimingFeed(
 
     // Everything received, guarded by `this`.
     private val tracks = mutableMapOf<String, TrackBuilder>()
+    private val speeds = mutableMapOf<String, SpeedBuilder>()
     private val driverList = JSONObject()
     private val timingLines = StringBuilder()
     private val tyreLines = StringBuilder()
@@ -86,6 +87,8 @@ class LiveTimingFeed(
     private var corners: List<Corner>? = null
     private var sectors: List<Corner> = emptyList()
     private val trackStatusLines = StringBuilder()
+    private val clockLines = StringBuilder()
+    private var parts: List<Pair<Long, Int>> = emptyList()
     /** The track's offset from GMT ("02:00:00"), for restart times given in local time. */
     private var gmtOffset: String? = null
     /** The published circuit shape, used until a lap with its finish line is traced. */
@@ -244,6 +247,8 @@ class LiveTimingFeed(
         when (topic) {
             "Position.z" -> runCatching { JSONObject(archive.inflate(data.toString())) }.getOrNull()
                 ?.let { archive.addPositions(it, tracks) }
+            "CarData.z" -> runCatching { JSONObject(archive.inflate(data.toString())) }.getOrNull()
+                ?.let { archive.addCarData(it, speeds) }
             "DriverList" -> (data as? JSONObject)?.let { merge(driverList, it) }
             "SessionInfo" -> (data as? JSONObject)?.let { info ->
                 info.optString("Type").takeIf { it.isNotEmpty() }?.let { sessionType = it }
@@ -261,6 +266,7 @@ class LiveTimingFeed(
             "SessionStatus" -> append(statusLines, start, utc, data, opening)
             "RaceControlMessages" -> append(controlLines, start, utc, data, opening)
             "TrackStatus" -> append(trackStatusLines, start, utc, data, opening)
+            "ExtrapolatedClock" -> append(clockLines, start, utc, data, opening)
         }
     }
 
@@ -293,6 +299,7 @@ class LiveTimingFeed(
             states = runCatching { archive.parseStates(text, start) }.getOrDefault(states)
             laps = runCatching { DriverTimingParser.parse(text, start) }.getOrDefault(laps)
             tyres = runCatching { TyreParser.parse(tyreLines.toString(), start) }.getOrDefault(tyres)
+            parts = runCatching { archive.parseParts(text, start) }.getOrDefault(parts)
         }
         val built = tracks.mapValues { it.value.build() }
         // No track from an earlier session: trace one from a lap driven since connecting.
@@ -340,7 +347,9 @@ class LiveTimingFeed(
             tyres = tyres,
             currentLap = currentLap,
             totalLaps = totalLaps,
-        )
+            clock = runCatching { SessionClock(archive.parseClock(clockLines.toString(), start), parts) }.getOrDefault(SessionClock.NONE),
+            live = true,
+        ).also { timing -> timing.speeds = speeds.mapValues { it.value.build() } }
     }
 
     companion object {
@@ -348,8 +357,8 @@ class LiveTimingFeed(
         private const val HUB = "https://livetiming.formula1.com/signalrcore"
         private const val RS = "\u001e"
         private val TOPICS = listOf(
-            "Heartbeat", "Position.z", "TimingData", "DriverList", "SessionInfo", "SessionStatus", "RaceControlMessages",
-            "TeamRadio", "TimingAppData", "TrackStatus", "LapCount",
+            "Heartbeat", "Position.z", "CarData.z", "TimingData", "DriverList", "SessionInfo", "SessionStatus", "RaceControlMessages",
+            "TeamRadio", "TimingAppData", "TrackStatus", "LapCount", "ExtrapolatedClock",
         )
         private const val REFRESH_MS = 2_000L
         /** How far before connecting the stream counts from: more than the picture can be behind. */
