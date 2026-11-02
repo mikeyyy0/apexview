@@ -31,6 +31,9 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -88,6 +91,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -529,6 +537,23 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
             app.wantPlayFocus = false
         }
     }
+    val remoteFocus = remember { MutableInteractionSource() }
+    val remoteFocused by remoteFocus.collectIsFocusedAsState()
+    var remotePending by remember { mutableStateOf(false) }
+    var remoteMoves by remember { mutableStateOf(0) }
+    fun finishRemoteScrub() {
+        if (!remotePending) return
+        remotePending = false
+        scrubbing?.let { app.seekTo((it * duration).toLong()) }
+        scrubbing = null
+    }
+    // Every feed seeks only once the presses stop, wherever they ended up.
+    LaunchedEffect(remoteMoves) {
+        if (remotePending) {
+            delay(REMOTE_SCRUB_SETTLE_MS)
+            finishRemoteScrub()
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -540,11 +565,26 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
         // window); the right end is the live edge.
         if (duration > 0) {
             // The flags sit on the line itself, under the thumb.
-            Box(Modifier.helpAnchor(app, "scrubber"), contentAlignment = Alignment.CenterStart) {
+            Box(
+                Modifier
+                    .helpAnchor(app, "scrubber")
+                    .remoteScrub(
+                        remoteFocus,
+                        onMove = { deltaMs ->
+                            val from = scrubbing ?: (app.positionMs.toFloat() / duration)
+                            scrubbing = (from + deltaMs.toFloat() / duration).coerceIn(0f, 1f)
+                            remotePending = true
+                            remoteMoves++
+                        },
+                        onDone = { finishRemoteScrub() },
+                    ),
+                contentAlignment = Alignment.CenterStart,
+            ) {
                 ScrubberFlags(app, duration)
                 AppleSlider(
-                    // A remote skips with left and right; focused, the slider would keep every arrow.
+                    // The remote works the box around it: focused, the slider would keep every arrow.
                     modifier = Modifier.focusProperties { canFocus = false },
+                    emphasised = remoteFocused,
                     value = scrubbing ?: (app.positionMs.toFloat() / duration).coerceIn(0f, 1f),
                     onValueChange = { scrubbing = it; app.showChrome() },
                     onValueChangeFinished = {
@@ -580,6 +620,45 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
         }
     }
 }
+
+/**
+ * How far one press of left or right moves the seek bar. A tap is a useful jump; holding starts
+ * finer than that, then speeds up so the length of a race is a few seconds' hold.
+ */
+internal fun remoteScrubStepMs(repeatCount: Int): Long = when {
+    repeatCount == 0 -> 30_000L
+    repeatCount < 20 -> 10_000L
+    repeatCount < 60 -> 30_000L
+    else -> 60_000L
+}
+
+/**
+ * The seek bar under a remote: up from the playback buttons reaches it, left and right move it,
+ * and select (or a moment's pause, or moving away) seeks there. Up and down carry on as usual.
+ */
+internal fun Modifier.remoteScrub(
+    interaction: MutableInteractionSource,
+    onMove: (Long) -> Unit,
+    onDone: () -> Unit,
+): Modifier = this
+    .onFocusChanged { if (!it.isFocused) onDone() }
+    .onKeyEvent { event ->
+        when (event.key) {
+            Key.DirectionLeft, Key.DirectionRight -> {
+                if (event.type == KeyEventType.KeyDown) {
+                    val step = remoteScrubStepMs(event.nativeKeyEvent.repeatCount)
+                    onMove(if (event.key == Key.DirectionLeft) -step else step)
+                }
+                true
+            }
+            Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                if (event.type == KeyEventType.KeyUp) onDone()
+                true
+            }
+            else -> false
+        }
+    }
+    .focusable(interactionSource = interaction)
 
 /**
  * Chequered marks on the scrubber's line at lights out (the session going green, outside races)
@@ -1206,6 +1285,7 @@ private fun BufferingRing(feed: FeedPlayer, modifier: Modifier) {
     }
 }
 
+private const val REMOTE_SCRUB_SETTLE_MS = 800L
 private const val VOTE_PROMPT_MS = 60_000L
 /** Below this width Chrome's vote sheet comes up from the bottom; at or above, in from the side. */
 private val VOTE_SIDE_SHEET = 840.dp

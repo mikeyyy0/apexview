@@ -1,10 +1,12 @@
 package app.apexview
 
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -12,6 +14,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -29,6 +32,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.dp
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,6 +52,55 @@ class RemoteFocusTest {
     }
 
     private fun assertFocus(tag: String) = rule.onNodeWithTag(tag).assertIsFocused()
+
+    @Test
+    fun theSeekBarMovesOnArrowsAndSeeksOnSelect() {
+        val moves = mutableListOf<Long>()
+        var done = 0
+        val bar = FocusRequester()
+        rule.setContent {
+            val input = LocalInputModeManager.current
+            LaunchedEffect(Unit) { input.requestInputMode(InputMode.Keyboard) }
+            Column(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier
+                        .testTag("bar")
+                        .focusRequester(bar)
+                        .remoteScrub(remember { MutableInteractionSource() }, { moves += it }, { done++ })
+                        .fillMaxWidth()
+                        .height(40.dp)
+                )
+                SecondaryButton("Play", Modifier.testTag("play")) {}
+            }
+        }
+        rule.waitForIdle()
+        rule.runOnIdle { bar.requestFocus() }
+        rule.waitForIdle()
+        assertFocus("bar")
+
+        press(Key.DirectionRight)
+        press(Key.DirectionLeft)
+        assertFocus("bar")
+        assertEquals(listOf(30_000L, -30_000L), moves)
+        val before = done
+        press(Key.DirectionCenter)
+        assertEquals(before + 1, done)
+
+        press(Key.DirectionDown)
+        assertFocus("play")
+        // Moving away seeks too, in case the presses hadn't settled yet.
+        assertEquals(before + 2, done)
+        press(Key.DirectionUp)
+        assertFocus("bar")
+    }
+
+    @Test
+    fun holdingAnArrowSpeedsTheSeekBarUp() {
+        assertEquals(30_000L, remoteScrubStepMs(0))
+        assertEquals(10_000L, remoteScrubStepMs(1))
+        assertEquals(30_000L, remoteScrubStepMs(20))
+        assertEquals(60_000L, remoteScrubStepMs(60))
+    }
 
     @Test
     fun theArrowsLeaveTheTopBarAndComeBack() {

@@ -306,6 +306,8 @@ class AppState(
             }
             tile.feed.setVideo(visible && !cooling, (tile.w * scale).toInt(), (tile.h * scale).toInt())
         }
+        val pictures = tiles.filter { it.feed.showingVideo }
+        pictures.zip(bandwidthShares(pictures.map { it.w * it.h })).forEach { (tile, share) -> tile.feed.setBandwidthShare(share) }
     }
 
     /** In laptop mode, the feed that was up top before the one there now. */

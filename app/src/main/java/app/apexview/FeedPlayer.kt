@@ -229,6 +229,14 @@ class FeedPlayer(
             .build()
     }
 
+    /** Whether this feed is downloading a picture at all. */
+    val showingVideo get() = videoOn
+
+    /** This feed's part of the connection among those showing a picture. */
+    fun setBandwidthShare(share: Float) {
+        fit.share = share
+    }
+
     /** Keeps the picture going at the size it already has, whatever size its window is now. */
     fun keepVideo() {
         if (!videoOn) setVideo(true, viewW.takeIf { it > 1 } ?: 1920, viewH.takeIf { it > 1 } ?: 1080)

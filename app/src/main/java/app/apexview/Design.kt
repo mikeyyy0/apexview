@@ -143,7 +143,10 @@ fun AppleSlider(
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     onValueChangeFinished: (() -> Unit)? = null,
     trackColor: Color = Color.White.copy(alpha = 0.25f),
+    /** The remote is on it: the thumb grows, without moving anything around it. */
+    emphasised: Boolean = false,
 ) {
+    val thumbScale by animateFloatAsState(if (emphasised) 1.5f else 1f, tween(Motion.PRESS_MS, easing = EaseOut), label = "thumb")
     androidx.compose.material3.Slider(
         value = value,
         onValueChange = onValueChange,
@@ -154,6 +157,7 @@ fun AppleSlider(
             androidx.compose.foundation.layout.Box(
                 Modifier
                     .size(22.dp)
+                    .graphicsLayer { scaleX = thumbScale; scaleY = thumbScale }
                     .shadow(3.dp, androidx.compose.foundation.shape.CircleShape)
                     .background(Color.White, androidx.compose.foundation.shape.CircleShape)
             )
