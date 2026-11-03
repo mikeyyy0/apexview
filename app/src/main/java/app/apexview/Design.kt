@@ -3,7 +3,11 @@ package app.apexview
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.material3.MaterialTheme
@@ -77,8 +81,22 @@ object Motion {
     const val FADE_MS = 220
 }
 
+/**
+ * Scrolling to whatever the remote moves onto, as on a phone: just far enough to show it. On a
+ * TV, Compose instead slides everything focused to a third of the way in, which pulled home's
+ * carousel half a slide sideways, where it fought its own snap and shook between the two.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+internal val PhoneScrolling = object : BringIntoViewSpec {}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalBringIntoViewSpec provides PhoneScrolling) { Theme(content) }
+}
+
+@Composable
+private fun Theme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             background = Ink.background,

@@ -1,6 +1,12 @@
 package app.apexview
 
+import android.content.pm.PackageManager
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.runtime.CompositionLocalProvider
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,7 +48,7 @@ import org.robolectric.annotation.Config
 /** What a remote's arrows reach on a page laid out the way home is. */
 @RunWith(RobolectricTestRunner::class)
 @Config(qualifiers = "w960dp-h540dp-land-television", sdk = [34])
-@OptIn(ExperimentalTestApi::class, ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalTestApi::class, ExperimentalComposeUiApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 class RemoteFocusTest {
     @get:Rule val rule = createComposeRule()
 
@@ -52,6 +58,49 @@ class RemoteFocusTest {
     }
 
     private fun assertFocus(tag: String) = rule.onNodeWithTag(tag).assertIsFocused()
+
+    /**
+     * Home's carousel with the remote on a slide's button, on a device that says it's a TV. With
+     * Compose's own TV scrolling (no [PhoneScrolling]) this never settles: the test times out.
+     */
+    @Test
+    fun theCarouselStaysPutUnderTheRemote() {
+        shadowOf(RuntimeEnvironment.getApplication().packageManager)
+            .setSystemFeature(PackageManager.FEATURE_LEANBACK, true)
+        lateinit var pager: PagerState
+        val play = FocusRequester()
+        rule.setContent {
+            val input = LocalInputModeManager.current
+            LaunchedEffect(Unit) { input.requestInputMode(InputMode.Keyboard) }
+            CompositionLocalProvider(LocalBringIntoViewSpec provides PhoneScrolling) {
+                pager = rememberPagerState(initialPage = 1500) { 3000 }
+                ArtPage(
+                    image = null,
+                    artKey = null,
+                    title = "Apexview",
+                    listState = rememberLazyListState(),
+                    heroBox = {
+                        HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { index ->
+                            Box(Modifier.fillMaxSize()) {
+                                Column(Modifier.align(Alignment.BottomStart).padding(20.dp)) {
+                                    PrimaryButton("Play", modifier = if (index == 1500) Modifier.focusRequester(play) else Modifier) {}
+                                }
+                            }
+                        }
+                    },
+                ) {
+                    item { Box(Modifier.fillMaxWidth().height(400.dp)) }
+                }
+            }
+        }
+        rule.waitForIdle()
+        rule.runOnIdle { play.requestFocus() }
+        rule.mainClock.advanceTimeBy(3_000)
+        rule.waitForIdle()
+
+        assertEquals(1500, pager.currentPage)
+        assertEquals(0f, pager.currentPageOffsetFraction)
+    }
 
     @Test
     fun theSeekBarMovesOnArrowsAndSeeksOnSelect() {
