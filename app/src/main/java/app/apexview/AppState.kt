@@ -63,7 +63,12 @@ class Tile(val id: Int, val contentId: Long, channel: Channel, feed: FeedPlayer)
 enum class MapMode(val label: String) {
     TRACK("Track"),
     EDGE("Edge"),
-    OFF("Off"),
+    /** The lap as a circle, with where a pit stop would put a driver. */
+    PIT("Pit"),
+    OFF("Off");
+
+    /** Drawn in the map's own window, which the feeds can be kept clear of. */
+    val inWindow get() = this == TRACK || this == PIT
 }
 
 /** The track map's own window. Any shape; the track is fitted inside it. */
@@ -461,6 +466,21 @@ class AppState(
     /** Edge by default; the last style picked is remembered. */
     var mapMode by mutableStateOf(savedMapMode())
         private set
+
+    /** The driver the pit circle shows a stop for; null follows the main onboard, else the leader. */
+    var pitDriver by mutableStateOf<String?>(null)
+
+    /** The car in the big tile, when it's an onboard. */
+    val mainOnboard get() = tiles.firstOrNull { it.id == bigTileId }?.channel?.racingNumber?.toString()
+
+    /** What a stop cost last time it was measured at this circuit, for before anyone's stopped. */
+    fun savedPitLoss(circuitKey: Int?): Long? =
+        circuitKey?.let { key -> prefs.getLong(PREF_PIT_LOSS + key, 0L).takeIf { it > 0L } }
+
+    fun rememberPitLoss(circuitKey: Int?, lossMs: Long) {
+        val key = circuitKey ?: return
+        if (prefs.getLong(PREF_PIT_LOSS + key, 0L) != lossMs) prefs.edit().putLong(PREF_PIT_LOSS + key, lossMs).apply()
+    }
 
     private fun savedMapMode() =
         prefs.getString(PREF_MAP_MODE, null)?.let { runCatching { MapMode.valueOf(it) }.getOrNull() } ?: MapMode.EDGE
@@ -1149,6 +1169,7 @@ class AppState(
 
     private fun loadTiming(contentId: Long) {
         timingContentId = contentId
+        pitDriver = null
         timing = null
         speedsJob?.cancel()
         val ref = sessionRefs[contentId]
@@ -1244,7 +1265,7 @@ class AppState(
         if (!first) return
         // The map lies over the feeds; they only move for it when asked to keep it clear (and
         // nobody has arranged them by hand).
-        if (mapMode == MapMode.TRACK && mapReserve && !handPlaced) layoutRequest++
+        if (mapMode.inWindow && mapReserve && !handPlaced) layoutRequest++
         else if (canvasW > 0f) placeMapIfNeeded(canvasW, canvasH)
     }
 
@@ -1309,7 +1330,8 @@ class AppState(
      * glows for a few seconds; tapping it again lets it go.
      */
     fun targetForMap(tile: Tile) {
-        if (timing == null || mapMode == MapMode.OFF || isMainTile(tile)) return
+        // The pit circle's cars choose its driver rather than an onboard.
+        if (timing == null || mapMode == MapMode.OFF || mapMode == MapMode.PIT || isMainTile(tile)) return
         targetTile = if (targetTile === tile) null else tile
         targetCount++
     }
@@ -1558,7 +1580,7 @@ class AppState(
         val custom = if (layoutMode == LayoutMode.CUSTOM) savedLayout(ordered.size)?.takeIf { it.fits(width, height) } else null
         val slots = when {
             custom != null -> custom.slots(width, height)
-            mapMode == MapMode.TRACK && mapReserve && timing != null -> {
+            mapMode.inWindow && mapReserve && timing != null -> {
                 val arrangement = Layouts.withMap(layoutMode, ordered.size, width, height)
                 val gap = arrangement.map
                 if (gap != null && minOf(gap.w, gap.h) >= minOf(width, height) * 0.22f) {
@@ -2565,6 +2587,7 @@ class AppState(
         private const val PREF_MAP_LOCKED = "mapLocked"
         private const val PREF_MAP_RESERVE = "mapReserve"
         private const val PREF_START_LINE = "startLine"
+        private const val PREF_PIT_LOSS = "pitLoss"
         // Snap mode: edges pull together inside 12dp; a push past 56dp goes through.
         private const val SNAP_DP = 12f
         private const val BREAK_DP = 56f

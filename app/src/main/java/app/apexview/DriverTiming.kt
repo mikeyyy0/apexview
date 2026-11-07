@@ -61,6 +61,31 @@ class DriverLaps(
         return if (i < 0) null else lapCounts[i] + 1
     }
 
+    /** Each trip down the pit lane that came back out, as (in, out) UTC ms, from F1's InPit/PitOut. */
+    val pitStops: List<Pair<Long, Long>> by lazy {
+        val stops = mutableListOf<Pair<Long, Long>>()
+        var inAt: Long? = null
+        states.forEachIndexed { i, s ->
+            if (s.inPit && inAt == null) inAt = times[i]
+            if (!s.inPit) inAt?.let { stops += it to times[i]; inAt = null }
+        }
+        stops
+    }
+
+    /**
+     * The driver's pace just before [utcMs]: the median of their last few laps, leaving out any
+     * too slow or too fast to be laps run on track (a red flag, a lap counted twice).
+     */
+    fun typicalLapMs(utcMs: Long): Long? {
+        val laps = (1 until crossings.size)
+            .filter { crossings[it] <= utcMs }
+            .map { crossings[it] - crossings[it - 1] }
+            .filter { it in MIN_LAP_MS..MAX_LAP_MS }
+            .takeLast(RECENT_LAPS)
+            .sorted()
+        return if (laps.isEmpty()) null else laps[laps.size / 2]
+    }
+
     fun at(utcMs: Long): CardState? {
         var i = -1
         var lo = 0
@@ -83,6 +108,12 @@ class DriverLaps(
             toLeader = s.toLeader,
             ahead = s.ahead,
         )
+    }
+
+    private companion object {
+        const val MIN_LAP_MS = 40_000L
+        const val MAX_LAP_MS = 240_000L
+        const val RECENT_LAPS = 5
     }
 }
 

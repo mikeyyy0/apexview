@@ -359,6 +359,7 @@ fun ViewerScreen(app: AppState) {
                 AnimatedVisibility(!laptop, Modifier.fillMaxSize().zIndex(1e9f), enter = fadeIn(swap), exit = fadeOut(swap)) {
                     when (app.mapMode) {
                         MapMode.TRACK -> Box(Modifier.fillMaxSize()) { MapPanelView(app, timing) }
+                        MapMode.PIT -> Box(Modifier.fillMaxSize()) { PitCircleView(app, timing) }
                         MapMode.EDGE -> Box(Modifier.fillMaxSize()) {
                             EdgeMap(app, timing, width, height, edgeInset, cornerRadius)
                         }
@@ -1190,6 +1191,7 @@ private fun MapSheet(app: AppState) {
                 when (app.mapMode) {
                     MapMode.TRACK -> "The circuit over the feeds. Unlock the layout to drag it by the track line or its move grip, pinch or twist it. Tap a feed, then a car, to swap in that car's onboard."
                     MapMode.EDGE -> "The lap laid around the edge of the screen, the finish at the top. Tap a feed, then a car, to swap in that car's onboard."
+                    MapMode.PIT -> "The lap as a circle, the finish at the top. A driver's ghost shows where a stop now would put them, and who they'd come out near. It follows the main onboard, or the leader; tap a car to choose another."
                     MapMode.OFF -> "No map."
                 },
                 style = Type.footnote,
@@ -1242,13 +1244,14 @@ private fun MapSheet(app: AppState) {
                         )
                     }
                 }
-                if (app.mapMode == MapMode.TRACK) {
+                if (app.mapMode.inWindow) {
                     Column(Modifier.padding(top = 16.dp).clip(RoundedCornerShape(12.dp)).background(Ink.background).padding(vertical = 4.dp)) {
-                        SwitchRow("Lock the map in place", app.mapLocked) { app.toggleMapLock() }
+                        if (app.mapMode == MapMode.TRACK) SwitchRow("Lock the map in place", app.mapLocked) { app.toggleMapLock() }
                         SwitchRow("Keep feeds clear of the map", app.mapReserve, app::chooseMapReserve)
                     }
                     Text(
-                        "Locked, the map stays put while you arrange the feeds under it. Kept clear, the feeds make room for it instead of lying under it.",
+                        if (app.mapMode == MapMode.TRACK) "Locked, the map stays put while you arrange the feeds under it. Kept clear, the feeds make room for it instead of lying under it."
+                        else "Kept clear, the feeds make room for the circle instead of lying under it.",
                         style = Type.footnote,
                         modifier = Modifier.padding(top = 8.dp),
                     )

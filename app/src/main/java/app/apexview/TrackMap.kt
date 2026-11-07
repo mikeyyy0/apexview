@@ -148,7 +148,7 @@ class MapFit private constructor(
 
 private val PUSH_RING = Color(0xFFFFD400)
 
-private class Car(val number: String, val x: Float, val y: Float, val state: LapState)
+internal class Car(val number: String, val x: Float, val y: Float, val state: LapState)
 
 /** The session time the map shows, updated every frame from the leading tile's clock. */
 @Composable
@@ -160,15 +160,15 @@ internal fun rememberMapTime(app: AppState): Long {
     return now
 }
 
-private fun carsAt(timing: SessionTiming, now: Long) = timing.tracks.mapNotNull { (number, track) ->
+internal fun carsAt(timing: SessionTiming, now: Long) = timing.tracks.mapNotNull { (number, track) ->
     track.atOrFirst(now)?.let { (x, y) -> Car(number, x, y, timing.states[number]?.at(now) ?: LapState.UNKNOWN) }
 }
 
-private fun TextMeasurer.label(text: String, size: TextUnit, bold: Boolean = true) =
+internal fun TextMeasurer.label(text: String, size: TextUnit, bold: Boolean = true) =
     measure(text, TextStyle(color = Color.White, fontSize = size, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal))
 
 /** Team-colored dot: a yellow ring on a flying lap in qualifying, small and faded in the pits. */
-private fun DrawScope.drawCar(timing: SessionTiming, car: Car, at: Offset, baseRadius: Float): Float {
+internal fun DrawScope.drawCar(timing: SessionTiming, car: Car, at: Offset, baseRadius: Float): Float {
     val color = Color(timing.drivers[car.number]?.color ?: android.graphics.Color.WHITE)
     val dim = car.state == LapState.PIT || car.state == LapState.KNOCKED_OUT
     val push = timing.showsPushLaps && car.state == LapState.PUSH
@@ -186,7 +186,7 @@ private fun DrawScope.drawCar(timing: SessionTiming, car: Car, at: Offset, baseR
 
 /** Invisible 44dp tap targets that follow the dots. Tapping one shows that car's onboard. */
 @Composable
-private fun CarTargets(app: AppState, positions: List<Pair<String, Offset>>) {
+internal fun CarTargets(app: AppState, positions: List<Pair<String, Offset>>, onTap: (String) -> Unit = app::showOnboard) {
     val target = 44.dp
     val half = with(LocalDensity.current) { target.toPx() / 2 }
     positions.forEach { (number, p) ->
@@ -194,7 +194,7 @@ private fun CarTargets(app: AppState, positions: List<Pair<String, Offset>>) {
             Modifier
                 .offset { IntOffset((p.x - half).roundToInt(), (p.y - half).roundToInt()) }
                 .size(target)
-                .clickable { app.showOnboard(number) }
+                .clickable { onTap(number) }
         )
     }
 }
@@ -536,7 +536,7 @@ private fun DrawScope.drawSafetyCar(at: Offset, radius: Float, label: TextLayout
 }
 
 /** The race leader's car number at [now], from the timing cards. */
-private fun leaderAt(timing: SessionTiming, now: Long): String? =
+internal fun leaderAt(timing: SessionTiming, now: Long): String? =
     timing.laps.entries.mapNotNull { (number, laps) -> laps.at(now)?.position?.let { number to it } }.minByOrNull { it.second }?.first
 
 /** The caption for [flags] at [now], measured once per change (the countdown ticks each second). */
