@@ -715,6 +715,40 @@ class AppState(
         latestWeekend()?.let(::loadWeekend)
     }
 
+    // Joining late: a live session that's been on a while can be watched from its start.
+
+    /** How long the live session on screen had been running when it was opened, while that's being offered. */
+    var joinedLateMs by mutableStateOf<Long?>(null)
+        private set
+    private var lateCheckedFor: Long? = null
+
+    /** Once per session opened, as soon as it's playing: live, at the live edge, and well under way. */
+    private fun checkJoinedLate(contentId: Long) {
+        if (lateCheckedFor == contentId || durationMs <= 0) return
+        lateCheckedFor = contentId
+        if (isLive && durationMs > JOINED_LATE_MS && durationMs - positionMs < AT_LIVE_EDGE_MS) joinedLateMs = durationMs
+    }
+
+    /** Where the race's lights out is in the stream, when timing knows it and the stream reaches back that far. */
+    val lightsOutPositionMs: Long?
+        get() {
+            val t = timing?.takeIf { it.isRace } ?: return null
+            val lightsOut = t.startedUtc ?: return null
+            val zero = leaderTile()?.feed?.windowStartMs() ?: return null
+            return (lightsOut - mapOffsetMs - zero).takeIf { it in 0..durationMs }
+        }
+
+    /** Back to the start: lights out in a race when it's known, else the start of what F1 keeps. */
+    fun watchFromStart() {
+        val target = lightsOutPositionMs ?: 0L
+        joinedLateMs = null
+        seekTo(target)
+    }
+
+    fun stayLive() {
+        joinedLateMs = null
+    }
+
     // What's on next: the race after the pre-race show, the post-race show after the race.
 
     /** Something else live to switch to, offered in a note while watching live. */
@@ -2465,6 +2499,8 @@ class AppState(
         votePromptOpen = false
         nextLive = null
         liveAtStart = null
+        joinedLateMs = null
+        lateCheckedFor = null
         tiles.forEach { it.feed.release() }
         tiles.clear()
         sessions.clear()
@@ -2604,6 +2640,7 @@ class AppState(
         durationMs = leader.player.duration.takeIf { it > 0 } ?: 0L
         isLive = leader.player.isCurrentMediaItemLive
         if (leader.player.playbackState != Player.STATE_READY) return
+        checkJoinedLate(leaderTile.contentId)
         // Twice a second, so every 10th tick is a save every 5 s.
         if (++saveTicks % 10 == 0) saveWatch()
 
@@ -2674,6 +2711,10 @@ class AppState(
         const val PERMISSION_NOTE =
             "Android's speech recogniser needs the microphone permission to transcribe. The app never records you."
         private const val TRANSCRIBE_RETRY_MS = 120_000L
+        /** A live session on longer than this when opened offers to start from the beginning. */
+        private const val JOINED_LATE_MS = 5 * 60_000L
+        /** Within this of the live edge counts as watching live. */
+        private const val AT_LIVE_EDGE_MS = 60_000L
         /** A minute of waiting for a stream to say whether it's live. */
         private const val LIVE_CHECK_TRIES = 240
 
