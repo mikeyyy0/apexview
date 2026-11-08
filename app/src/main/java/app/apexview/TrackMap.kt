@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.rounded.OpenWith
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -186,9 +187,18 @@ internal fun DrawScope.drawCar(timing: SessionTiming, car: Car, at: Offset, base
     return alpha
 }
 
-/** Invisible 44dp tap targets that follow the dots. Tapping one shows that car's onboard. */
+/**
+ * Invisible 44dp tap targets that follow the dots. A tap shows that car's onboard, unless told
+ * otherwise; holding one shows where a stop now would put it, and holding it again hides that.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-internal fun CarTargets(app: AppState, positions: List<Pair<String, Offset>>, onTap: (String) -> Unit = app::showOnboard) {
+internal fun CarTargets(
+    app: AppState,
+    positions: List<Pair<String, Offset>>,
+    onTap: (String) -> Unit = app::showOnboard,
+    onHold: (String) -> Unit = { app.pitDriver = if (app.pitDriver == it) null else it },
+) {
     val target = 44.dp
     val half = with(LocalDensity.current) { target.toPx() / 2 }
     positions.forEach { (number, p) ->
@@ -196,7 +206,7 @@ internal fun CarTargets(app: AppState, positions: List<Pair<String, Offset>>, on
             Modifier
                 .offset { IntOffset((p.x - half).roundToInt(), (p.y - half).roundToInt()) }
                 .size(target)
-                .clickable { onTap(number) }
+                .combinedClickable(onLongClick = { onHold(number) }) { onTap(number) }
         )
     }
 }
@@ -384,6 +394,10 @@ private fun TrackDrawing(app: AppState, timing: SessionTiming, width: Float, hei
 
     val now = rememberMapTime(app)
     val cars = carsAt(timing, now).map { it to fit.map(it.x, it.y) }
+    val stop = pitStopNow(rememberPitBasis(app, timing, now), app.pitDriver, cars.map { (car, _) -> car.number to timing.geometry.progress(car.x, car.y) })
+    val pitLabel = remember { measurer.label("PIT", 8.sp) }
+    val stopLine = stop?.let { pitStopLine(timing, it) }
+    val stopText = remember(stopLine) { stopLine?.let { measurer.label(it, 13.sp) } }
     val flags = timing.flags.at(now)
     val caption = rememberCaption(measurer, flags, now)
     val safetyCar = if (!flags.track.safetyCar) null else leaderAt(timing, now)
@@ -396,6 +410,10 @@ private fun TrackDrawing(app: AppState, timing: SessionTiming, width: Float, hei
         drawFlags(flags, path, sectors, 3.5.dp.toPx(), pulse)
         drawSectorGlyphs(flags, sectors, 14.dp.toPx()) { f -> lapPoint(f).let { p -> p + outward(p, Offset(width / 2, height / 2)) * 18.dp.toPx() } }
         drawCaption(flags, caption, width / 2, height - 4.dp.toPx(), pulse)
+        stopText?.let { text ->
+            val above = caption?.let { it.size.height + 6.dp.toPx() } ?: 0f
+            drawText(text, topLeft = Offset(width / 2 - text.size.width / 2f, height - 4.dp.toPx() - above - text.size.height))
+        }
         val center = Offset(width / 2, height / 2)
 
         fun mark(f: Float, chequered: Boolean, label: TextLayoutResult) {
@@ -421,9 +439,11 @@ private fun TrackDrawing(app: AppState, timing: SessionTiming, width: Float, hei
             drawText(label, topLeft = at - Offset(label.size.width / 2f, label.size.height / 2f), alpha = 0.75f)
         }
 
+        stop?.let { drawPitStop(it, Color(timing.drivers[it.number]?.color ?: android.graphics.Color.WHITE), pitLabel) { f -> lapPoint(f) } }
         cars.forEach { (car, p) ->
             val r = 7.dp.toPx()
             val alpha = drawCar(timing, car, p, r)
+            if (car.number == stop?.number) drawCircle(Color.White, r + 4.dp.toPx(), p, style = Stroke(2.dp.toPx()))
             names[car.number]?.let { drawText(it, topLeft = Offset(p.x + r + 3.dp.toPx(), p.y - it.size.height / 2f), alpha = alpha) }
         }
         safetyCar?.let { drawSafetyCar(it, 10.dp.toPx(), scLabel) }
@@ -657,6 +677,10 @@ fun EdgeMap(app: AppState, timing: SessionTiming, width: Float, height: Float, i
     val safetyCar = if (!flags.track.safetyCar) null else leaderAt(timing, now)
         ?.let { leader -> cars.firstOrNull { it.first.number == leader }?.second }
         ?.let { it + SAFETY_CAR_AHEAD }
+    val stop = pitStopNow(rememberPitBasis(app, timing, now), app.pitDriver, cars.map { (car, f) -> car.number to f })
+    val pitLabel = remember { measurer.label("PIT", 7.sp) }
+    val stopLine = stop?.let { pitStopLine(timing, it) }
+    val stopText = remember(stopLine) { stopLine?.let { measurer.label(it, 13.sp) } }
 
     Canvas(Modifier.fillMaxSize().graphicsLayer(alpha = app.mapOpacity)) {
         val line = ribbon.path()
@@ -666,6 +690,10 @@ fun EdgeMap(app: AppState, timing: SessionTiming, width: Float, height: Float, i
         drawSectorGlyphs(flags, sectors, 12.dp.toPx()) { f -> ribbon.point(f) + ribbon.inward(f) * 12.dp.toPx() }
         // Above the bottom of the loop, clear of the car names that sit inside it.
         drawCaption(flags, caption, width / 2, height - inset / 2 - 56.dp.toPx(), pulse)
+        stopText?.let { text ->
+            val above = caption?.let { it.size.height + 6.dp.toPx() } ?: 0f
+            drawText(text, topLeft = Offset(width / 2 - text.size.width / 2f, height - inset / 2 - 56.dp.toPx() - above - text.size.height))
+        }
 
         fun tick(f: Float, length: Float, stroke: Float) {
             val p = ribbon.point(f)
@@ -698,10 +726,12 @@ fun EdgeMap(app: AppState, timing: SessionTiming, width: Float, height: Float, i
         }
 
         // Labels step further inward when cars bunch up, so a pack stays readable.
+        stop?.let { drawPitStop(it, Color(timing.drivers[it.number]?.color ?: android.graphics.Color.WHITE), pitLabel, ribbon::point) }
         val lastAt = FloatArray(3) { -Float.MAX_VALUE }
         cars.forEach { (car, f) ->
             val p = ribbon.point(f)
             val alpha = drawCar(timing, car, p, 5.dp.toPx())
+            if (car.number == stop?.number) drawCircle(Color.White, 9.dp.toPx(), p, style = Stroke(2.dp.toPx()))
             val label = names[car.number] ?: return@forEach
             val along = f * ribbon.perimeter
             val gap = label.size.width + 6.dp.toPx()
@@ -719,3 +749,30 @@ fun EdgeMap(app: AppState, timing: SessionTiming, width: Float, height: Float, i
     }
     CarTargets(app, cars.map { (car, f) -> car.number to ribbon.point(f) })
 }
+
+/**
+ * A stop now for the held car, on a map whose lap runs through [point]: the stretch of track it
+ * would drop back over, shaded, and a ring where it would come out.
+ */
+internal fun DrawScope.drawPitStop(stop: PitStopNow, color: Color, label: TextLayoutResult, point: (Float) -> Offset) {
+    val span = (stop.carProgress - stop.ghostProgress).mod(1f)
+    val path = Path()
+    for (i in 0..PIT_STEPS) {
+        val p = point(stop.ghostProgress + span * i / PIT_STEPS)
+        if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+    }
+    drawPath(path, PIT_PURPLE.copy(alpha = 0.6f), style = Stroke(10.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+    val out = point(stop.ghostProgress)
+    drawCircle(Color.Black.copy(alpha = 0.6f), 8.dp.toPx(), out)
+    drawCircle(color, 7.dp.toPx(), out, style = Stroke(2.5.dp.toPx()))
+    drawText(label, topLeft = out - Offset(label.size.width / 2f, label.size.height + 10.dp.toPx()))
+}
+
+/** "If HAM stops now, out 2.1 s behind NOR": the line under a map while a car is held. */
+internal fun pitStopLine(timing: SessionTiming, stop: PitStopNow): String {
+    fun tla(number: String) = timing.drivers[number]?.tla ?: number
+    return "If ${tla(stop.number)} stops now" + (stop.outBehind?.let { (n, ms) -> ", out %.1f s behind %s".format(ms / 1000f, tla(n)) } ?: "")
+}
+
+private const val PIT_STEPS = 48
+internal val PIT_PURPLE = Color(0xFF7A3E9D)

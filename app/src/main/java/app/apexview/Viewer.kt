@@ -1189,8 +1189,8 @@ private fun MapSheet(app: AppState) {
             }
             Text(
                 when (app.mapMode) {
-                    MapMode.TRACK -> "The circuit over the feeds. Unlock the layout to drag it by the track line or its move grip, pinch or twist it. Tap a feed, then a car, to swap in that car's onboard."
-                    MapMode.EDGE -> "The lap laid around the edge of the screen, the finish at the top. Tap a feed, then a car, to swap in that car's onboard."
+                    MapMode.TRACK -> "The circuit over the feeds. Unlock the layout to drag it by the track line or its move grip, pinch or twist it. Tap a feed, then a car, to swap in that car's onboard. Hold a car to see where a stop now would put it."
+                    MapMode.EDGE -> "The lap laid around the edge of the screen, the finish at the top. Tap a feed, then a car, to swap in that car's onboard. Hold a car to see where a stop now would put it."
                     MapMode.PIT -> "The circle of doom: the lap as a circle in time at the leader's pace, the finish at the top and the pit lane inside. Tap a car for every gap to it and the stretch a stop now would drop it back."
                     MapMode.OFF -> "No map."
                 },

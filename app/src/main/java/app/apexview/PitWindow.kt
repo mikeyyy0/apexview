@@ -119,6 +119,20 @@ class LapProfile private constructor(private val fractions: FloatArray) {
         return (fractions[i] + step * (x - i)).mod(1f)
     }
 
+    /** The reverse of [timeFraction]: where round the track the lap is [fraction] of the way through in time. */
+    fun progressAt(fraction: Float): Float {
+        val target = fraction.mod(1f)
+        for (i in 0 until BINS) {
+            var step = fractions[i + 1] - fractions[i]
+            if (step < -0.5f) step += 1f
+            if (step > 0.5f) step -= 1f
+            if (step <= 0f) continue
+            val into = (target - fractions[i]).mod(1f)
+            if (into <= step) return ((i + into / step) / BINS).mod(1f)
+        }
+        return target
+    }
+
     companion object {
         private const val BINS = 200
 

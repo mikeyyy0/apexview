@@ -70,15 +70,25 @@ fun PitCircleView(app: AppState, timing: SessionTiming) {
     }
 }
 
-/** One car on the circle: how far into the lap (in time) and through the race (in laps). */
-private class OnCircle(val car: Car, val at: Float, val distance: Float)
+/**
+ * What every map needs to show a pit stop: the reference lap and the lap laid out in time (see
+ * [LapProfile]), and what a stop costs here.
+ */
+internal class PitBasis(
+    val leader: String?,
+    /** The leader's last few green laps, as (start, end) UTC ms. */
+    val green: List<Pair<Long, Long>>,
+    /** Null until the leader has finished a lap. */
+    val referenceMs: Long?,
+    val profile: LapProfile,
+    val lane: PitWindow.PitLane?,
+    /** What a stop cost last time it was measured at this circuit. */
+    val saved: Long?,
+    val lossMs: Long,
+)
 
 @Composable
-private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height: Float) {
-    val density = LocalDensity.current
-    val measurer = rememberTextMeasurer()
-    val now = rememberMapTime(app)
-    val flags = timing.flags.at(now)
+internal fun rememberPitBasis(app: AppState, timing: SessionTiming, now: Long): PitBasis {
     val leader = leaderAt(timing, now)
     val leaderLaps = leader?.let { timing.laps[it] }
 
@@ -107,6 +117,40 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
     LaunchedEffect(lane?.lossMs, timing.circuitKey) { lane?.let { app.rememberPitLoss(timing.circuitKey, it.lossMs) } }
     val saved = remember(timing.circuitKey) { app.savedPitLoss(timing.circuitKey) }
     val lossMs = lane?.lossMs ?: saved ?: PitWindow.TYPICAL_LOSS_MS
+    return PitBasis(leader, green, referenceMs, profile, lane, saved, lossMs)
+}
+
+/** A stop now for [number]: where on the lap it'd come out (track progress), and who'd be just ahead. */
+internal class PitStopNow(val number: String, val carProgress: Float, val ghostProgress: Float, val outBehind: Pair<String, Long>?)
+
+/** [cars] are each car's progress round the track; null when [number] isn't among them or there's no reference lap yet. */
+internal fun pitStopNow(basis: PitBasis, number: String?, cars: List<Pair<String, Float>>): PitStopNow? {
+    val referenceMs = basis.referenceMs ?: return null
+    val progress = cars.firstOrNull { it.first == number }?.second ?: return null
+    val at = basis.profile.timeFraction(progress)
+    val ghost = PitWindow.ghost(at, basis.lossMs, referenceMs)
+    val others = cars.filter { it.first != number }.map { (n, p) -> n to basis.profile.timeFraction(p) }
+    return PitStopNow(number!!, progress, basis.profile.progressAt(ghost), PitWindow.neighbours(ghost, others, referenceMs).ahead)
+}
+
+/** One car on the circle: how far into the lap (in time) and through the race (in laps). */
+private class OnCircle(val car: Car, val at: Float, val distance: Float)
+
+@Composable
+private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height: Float) {
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val now = rememberMapTime(app)
+    val flags = timing.flags.at(now)
+    val basis = rememberPitBasis(app, timing, now)
+    val leader = basis.leader
+    val leaderLaps = leader?.let { timing.laps[it] }
+    val green = basis.green
+    val referenceMs = basis.referenceMs
+    val profile = basis.profile
+    val lane = basis.lane
+    val saved = basis.saved
+    val lossMs = basis.lossMs
 
     if (referenceMs == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -200,7 +244,7 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
         // The pit window: from where a stop now would drop the chosen car, round to the car.
         if (chosen != null && ghost != null) {
             drawArc(
-                WINDOW_PURPLE.copy(alpha = 0.55f), degrees(ghost), turn * (chosen.at - ghost).mod(1f) * 360f, false,
+                PIT_PURPLE.copy(alpha = 0.55f), degrees(ghost), turn * (chosen.at - ghost).mod(1f) * 360f, false,
                 ringCorner, ringSize, style = Stroke(14.dp.toPx()),
             )
         }
@@ -269,9 +313,10 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
             drawCircle(Color.White, 7.dp.toPx(), p, style = Stroke(2.dp.toPx()))
         }
     }
-    CarTargets(app, ring.map { it.car.number to point(it.at) }) { number ->
+    // On the circle a tap chooses the car, as holding does on the other maps.
+    CarTargets(app, ring.map { it.car.number to point(it.at) }, onTap = { number ->
         app.pitDriver = if (app.pitDriver == number) null else number
-    }
+    })
 
     fun seconds(ms: Long) = "%.1f s".format(ms / 1000f)
     Box(
@@ -353,6 +398,5 @@ private val LABEL_ROOM = 56.dp
 private const val LANE_RADIUS = 0.62f
 /** How often the leader's lap is sampled to lay the circle out in time. */
 private const val SAMPLE_MS = 250L
-private val WINDOW_PURPLE = Color(0xFF7A3E9D)
 private val GREEN = Color(0xFF3DAA4F)
 private val YELLOW = Color(0xFFF5C518)

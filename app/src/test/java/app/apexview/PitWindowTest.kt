@@ -122,6 +122,19 @@ class PitWindowTest {
     }
 
     @Test
+    fun aTimeOnTheLapFindsItsPlaceOnTrack() {
+        // The slow-then-fast lap from above, and a line 0.3 round the outline.
+        val samples = (0..100).map { s ->
+            val progress = if (s <= 25) s / 50f else 0.5f + (s - 25) / 150f
+            s * 1_000L to (0.3f + progress).mod(1f)
+        }
+        val profile = LapProfile.from(samples, 100_000)!!
+        listOf(0.05f, 0.3f, 0.55f, 0.8f, 0.99f).forEach { p ->
+            assertEquals(p, profile.progressAt(profile.timeFraction(p)), 0.01f)
+        }
+    }
+
+    @Test
     fun gapsReadAsSeconds() {
         assertEquals(1.234f, PitWindow.gapSeconds("+1.234")!!, 0.0001f)
         assertNull(PitWindow.gapSeconds("1L"))
