@@ -467,11 +467,12 @@ class AppState(
     var mapMode by mutableStateOf(savedMapMode())
         private set
 
-    /** The driver the pit circle shows a stop for; null follows the main onboard, else the leader. */
+    /** The driver the pit circle shows a stop for and measures gaps to; null for none. */
     var pitDriver by mutableStateOf<String?>(null)
-
-    /** The car in the big tile, when it's an onboard. */
-    val mainOnboard get() = tiles.firstOrNull { it.id == bigTileId }?.channel?.racingNumber?.toString()
+    /** The pit circle's gaps: to the leader, or (false) to the car ahead on track. */
+    var pitGapsToLeader by mutableStateOf(false)
+    /** The pit circle runs the other way round from the circuit. */
+    var pitCircleFlipped by mutableStateOf(false)
 
     /** What a stop cost last time it was measured at this circuit, for before anyone's stopped. */
     fun savedPitLoss(circuitKey: Int?): Long? =

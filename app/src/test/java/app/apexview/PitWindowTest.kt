@@ -77,6 +77,49 @@ class PitWindowTest {
             startUtcMs = 0,
             laps = mapOf("44" to laps),
         )
-        assertEquals(21_000L to 1, PitWindow.sessionLoss(timing))
+        val lane = PitWindow.pitLane(timing)!!
+        assertEquals(21_000L, lane.lossMs)
+        assertEquals(1, lane.stops)
+        assertEquals(0.2f, lane.entry, 0.001f)
+        assertEquals(0.3f, lane.exit, 0.001f)
+        assertEquals(30_000L, lane.laneMs)
+    }
+
+    @Test
+    fun theCircleIsLaidOutInTime() {
+        // A 100 s lap: the first half of the track takes 25 s, the second 75 s.
+        val samples = (0..100).map { s ->
+            val ms = s * 1_000L
+            val progress = if (s <= 25) s / 50f else 0.5f + (s - 25) / 150f
+            ms to progress.mod(1f)
+        }
+        val profile = LapProfile.from(samples, 100_000)!!
+        assertEquals(0f, profile.timeFraction(0f), 0.01f)
+        assertEquals(0.25f, profile.timeFraction(0.5f), 0.01f)
+        assertEquals(0.625f, profile.timeFraction(0.75f), 0.01f)
+    }
+
+    @Test
+    fun aLineThatIsntTheOutlinesStartStillReadsFromTheLine() {
+        // The same even lap, but the line is 0.3 of the way round the outline.
+        val samples = (0..100).map { s -> s * 1_000L to (0.3f + s / 100f).mod(1f) }
+        val profile = LapProfile.from(samples, 100_000)!!
+        assertEquals(0f, profile.timeFraction(0.3f), 0.01f)
+        assertEquals(0.2f, profile.timeFraction(0.5f), 0.01f)
+        assertEquals(0.8f, profile.timeFraction(0.1f), 0.01f)
+    }
+
+    @Test
+    fun halfALapIsntOneToLayOut() {
+        assertNull(LapProfile.from((0..50).map { s -> s * 1_000L to s / 100f }, 100_000))
+    }
+
+    @Test
+    fun theLapCountIsPutBackOnTheLapThePositionSays() {
+        // Counted onto lap 5 a moment before the car reaches the line.
+        assertEquals(4.98f, PitWindow.raceDistance(5, 0.98f, 0.01f), 0.0001f)
+        // Over the line, not yet counted.
+        assertEquals(5.02f, PitWindow.raceDistance(4, 0.02f, 0.99f), 0.0001f)
+        assertEquals(4.5f, PitWindow.raceDistance(4, 0.5f, 0.5f), 0.0001f)
     }
 }

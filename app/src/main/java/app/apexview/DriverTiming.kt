@@ -77,14 +77,27 @@ class DriverLaps(
      * too slow or too fast to be laps run on track (a red flag, a lap counted twice).
      */
     fun typicalLapMs(utcMs: Long): Long? {
-        val laps = (1 until crossings.size)
-            .filter { crossings[it] <= utcMs }
-            .map { crossings[it] - crossings[it - 1] }
-            .filter { it in MIN_LAP_MS..MAX_LAP_MS }
-            .takeLast(RECENT_LAPS)
-            .sorted()
+        val laps = lapWindows(utcMs).map { (start, end) -> end - start }.takeLast(RECENT_LAPS).sorted()
         return if (laps.isEmpty()) null else laps[laps.size / 2]
     }
+
+    /** Every lap finished by [utcMs] that could have been run on track, as (start, end) UTC ms, oldest first. */
+    fun lapWindows(utcMs: Long): List<Pair<Long, Long>> =
+        (1 until crossings.size)
+            .filter { crossings[it] <= utcMs }
+            .map { crossings[it - 1] to crossings[it] }
+            .filter { (start, end) -> end - start in MIN_LAP_MS..MAX_LAP_MS }
+
+    /** When the driver's current spell in the pit lane began, if they're in it at [utcMs]. */
+    fun inPitSince(utcMs: Long): Long? {
+        var i = times.indexOfLast { it <= utcMs }
+        if (i < 0 || !states[i].inPit) return null
+        while (i > 0 && states[i - 1].inPit) i--
+        return times[i]
+    }
+
+    /** When the driver last crossed the line, by [utcMs]. */
+    fun lastCrossing(utcMs: Long): Long? = crossings.lastOrNull { it <= utcMs }
 
     fun at(utcMs: Long): CardState? {
         var i = -1
