@@ -118,7 +118,8 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
     // Cars in the pit lane ride the inner arc; one there far longer than a stop has stopped.
     val inLane = mutableMapOf<String, Float>()
     val ring = mutableListOf<OnCircle>()
-    carsAt(timing, now).forEach { car ->
+    val placed = carsAt(timing, now)
+    placed.forEach { car ->
         val laps = timing.laps[car.number]
         val since = laps?.inPitSince(now)
         if (since != null && lane != null) {
@@ -128,6 +129,24 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
         val at = profile.timeFraction(timing.geometry.progress(car.x, car.y))
         val crossed = laps?.lastCrossing(now)?.let { (now - it).toFloat() / referenceMs }
         ring += OnCircle(car, at, PitWindow.raceDistance(laps?.lapAt(now) ?: 0, at, crossed))
+    }
+    // F1's positions can stop before the timing does (the 2026 Mexico race's ran out on lap 57).
+    // Cars without one go where their gap puts them, the way MultiViewer lays out its circle:
+    // the leader by the time since it crossed the line, everyone else that far behind it.
+    if (placed.size < timing.laps.size) {
+        val missing = timing.laps.filter { (number, laps) ->
+            placed.none { it.number == number } && !laps.retiredAt(now) && laps.inPitSince(now) == null
+        }
+        val leaderAt = leader?.let { number ->
+            ring.firstOrNull { it.car.number == number }?.at
+                ?: timing.laps[number]?.lastCrossing(now)?.let { ((now - it).toFloat() / referenceMs).mod(1f) }
+        }
+        if (leaderAt != null) missing.forEach { (number, laps) ->
+            val behind = if (number == leader) 0f else PitWindow.gapSeconds(laps.at(now)?.toLeader) ?: return@forEach
+            val at = (leaderAt - behind * 1000f / referenceMs).mod(1f)
+            val crossed = laps.lastCrossing(now)?.let { (now - it).toFloat() / referenceMs }
+            ring += OnCircle(Car(number, 0f, 0f, LapState.UNKNOWN), at, PitWindow.raceDistance(laps.lapAt(now) ?: 0, at, crossed))
+        }
     }
     val chosen = app.pitDriver?.let { n -> ring.firstOrNull { it.car.number == n } }
     val front = ring.maxByOrNull { it.distance }
@@ -146,8 +165,16 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
 
     // The way round matches the circuit's, unless flipped.
     val turn = if (timing.geometry.counterClockwise != app.pitCircleFlipped) -1f else 1f
-    val centre = Offset(width / 2, height / 2)
-    val radius = (min(width, height) / 2 - with(density) { LABEL_ROOM.toPx() }).coerceAtLeast(1f)
+    // In the part of the window that's on screen: a window carried over from the track map can
+    // run off the edge, and the circle would go with it.
+    val panel = app.activeMapPanel
+    val (screenW, screenH) = app.canvasSize
+    val left = (-panel.x).coerceIn(0f, width)
+    val top = (-panel.y).coerceIn(0f, height)
+    val right = if (screenW > 0f) (screenW - panel.x).coerceIn(left, width) else width
+    val bottom = if (screenH > 0f) (screenH - panel.y).coerceIn(top, height) else height
+    val centre = Offset((left + right) / 2, (top + bottom) / 2)
+    val radius = (min(right - left, bottom - top) / 2 - with(density) { LABEL_ROOM.toPx() }).coerceAtLeast(1f)
     val laneRadius = radius * LANE_RADIUS
     fun degrees(f: Float) = -90f + turn * f * 360f
     fun direction(f: Float) = Math.toRadians(degrees(f).toDouble()).let { Offset(cos(it).toFloat(), sin(it).toFloat()) }
@@ -166,6 +193,8 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
     }
 
     Canvas(Modifier.fillMaxSize().graphicsLayer(alpha = app.mapOpacity)) {
+        // Dark inside the ring, so the centre reads over a bright picture.
+        drawCircle(Color.Black.copy(alpha = 0.6f), radius, centre)
         val ringSize = Size(radius * 2, radius * 2)
         val ringCorner = centre - Offset(radius, radius)
         // The pit window: from where a stop now would drop the chosen car, round to the car.
@@ -245,9 +274,14 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
     }
 
     fun seconds(ms: Long) = "%.1f s".format(ms / 1000f)
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(
+        Modifier
+            .offset { IntOffset((centre.x - width / 2).roundToInt(), (centre.y - height / 2).roundToInt()) }
+            .fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(
-            Modifier.width(with(density) { (laneRadius * 1.6f).toDp() }),
+            Modifier.width(with(density) { (radius * 1.5f).toDp() }),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             val lap = leaderLaps?.lapAt(now)
@@ -270,13 +304,13 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
                 modifier = Modifier.padding(top = 2.dp).background(statusColor, RoundedCornerShape(3.dp)).padding(horizontal = 8.dp, vertical = 1.dp),
             )
             Text(
-                "Reference lap: " + "%d:%06.3f".format(referenceMs / 60_000, referenceMs % 60_000 / 1000f),
-                style = Type.footnote.copy(color = Ink.primary),
+                "Reference lap " + "%d:%06.3f".format(referenceMs / 60_000, referenceMs % 60_000 / 1000f),
+                style = Type.footnote.copy(color = Ink.primary, textAlign = TextAlign.Center),
                 modifier = Modifier.padding(top = 6.dp),
             )
             Text(
-                if (green.isEmpty()) "the leader's usual lap so far" else "Avg. of last ${green.size} green lap" + if (green.size == 1) "" else "s",
-                style = Type.caption,
+                if (green.isEmpty()) "the leader's usual lap so far" else "avg. of last ${green.size} green lap" + if (green.size == 1) "" else "s",
+                style = Type.caption.copy(textAlign = TextAlign.Center),
             )
             Text(
                 when {
@@ -284,7 +318,7 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
                     app.pitGapsToLeader -> "gap to the leader"
                     else -> "gap to the car ahead"
                 },
-                style = Type.footnote.copy(color = Ink.primary),
+                style = Type.footnote.copy(color = Ink.primary, textAlign = TextAlign.Center),
                 modifier = Modifier.padding(top = 6.dp),
             )
             if (chosen != null) {

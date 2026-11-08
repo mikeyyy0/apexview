@@ -49,6 +49,8 @@ class DriverLaps(
         val inPit: Boolean,
         val toLeader: String?,
         val ahead: String?,
+        /** Out of the race: retired, or stopped on track. */
+        val retired: Boolean = false,
     )
 
     /**
@@ -87,6 +89,9 @@ class DriverLaps(
             .filter { crossings[it] <= utcMs }
             .map { crossings[it - 1] to crossings[it] }
             .filter { (start, end) -> end - start in MIN_LAP_MS..MAX_LAP_MS }
+
+    /** Whether the driver was out of the race at [utcMs]. */
+    fun retiredAt(utcMs: Long): Boolean = times.indexOfLast { it <= utcMs }.let { it >= 0 && states[it].retired }
 
     /** When the driver's current spell in the pit lane began, if they're in it at [utcMs]. */
     fun inPitSince(utcMs: Long): Long? {
@@ -137,7 +142,6 @@ class DriverLaps(
  * empty when a new lap starts.
  */
 object DriverTimingParser {
-    private const val TS = 12
     private const val LATE_SECTOR_MS = 3_000L
 
     private class Live {
@@ -154,6 +158,7 @@ object DriverTimingParser {
         var toLeader: String? = null
         var ahead: String? = null
         var inPit = false
+        var retired = false
         var laps: Int? = null
         val times = ArrayList<Long>()
         val snaps = ArrayList<DriverLaps.Snapshot>()
@@ -162,7 +167,7 @@ object DriverTimingParser {
         val lapCounts = ArrayList<Int>()
 
         fun snap(t: Long) {
-            val copy = DriverLaps.Snapshot(position, sector.toList(), lapSectors.toList(), lastLap, gap, inPit, toLeader, ahead)
+            val copy = DriverLaps.Snapshot(position, sector.toList(), lapSectors.toList(), lastLap, gap, inPit, toLeader, ahead, retired)
             if (times.isNotEmpty() && times.last() == t) {
                 snaps[snaps.lastIndex] = copy
             } else {
@@ -175,8 +180,8 @@ object DriverTimingParser {
     fun parse(stream: String, streamStart: Long): Map<String, DriverLaps> {
         val drivers = mutableMapOf<String, Live>()
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS) return@forEach
-            val lines = runCatching { JSONObject(line.substring(TS)).optJSONObject("Lines") }.getOrNull() ?: return@forEach
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val lines = runCatching { JSONObject(line.substring(streamPrefixLength(line))).optJSONObject("Lines") }.getOrNull() ?: return@forEach
             val t = streamStart + offsetMs(line)
             lines.keys().forEach { number ->
                 val d = lines.optJSONObject(number) ?: return@forEach
@@ -192,6 +197,8 @@ object DriverTimingParser {
         d.optString("Position").toIntOrNull()?.let { l.position = it }
         if (d.has("InPit")) l.inPit = d.optBoolean("InPit")
         if (d.optBoolean("PitOut")) l.inPit = false
+        if (d.has("Retired")) l.retired = d.optBoolean("Retired")
+        if (d.optBoolean("Stopped")) l.retired = true
         // Qualifying gives the gap to the fastest; races the interval to the car ahead.
         d.optString("TimeDiffToFastest").takeIf { d.has("TimeDiffToFastest") }?.let { l.gap = it.ifEmpty { null } }
         d.optJSONObject("IntervalToPositionAhead")?.let { o ->
@@ -264,13 +271,7 @@ object DriverTimingParser {
         else -> Pace.YELLOW
     }
 
-    private fun offsetMs(line: String): Long {
-        val h = line.substring(0, 2).toLong()
-        val m = line.substring(3, 5).toLong()
-        val s = line.substring(6, 8).toLong()
-        val ms = line.substring(9, 12).toLong()
-        return ((h * 60 + m) * 60 + s) * 1000 + ms
-    }
+    private fun offsetMs(line: String): Long = streamOffsetMs(line)
 }
 
 /** A tyre: its compound (SOFT, MEDIUM, HARD, INTERMEDIATE, WET) and laps done on it. */
@@ -289,15 +290,14 @@ class TyreLog(private val times: LongArray, private val tyres: List<Tyre>) {
  * then index-keyed updates). The current tyre is the last stint's compound and its lap count.
  */
 object TyreParser {
-    private const val TS = 12
 
     fun parse(stream: String, streamStart: Long): Map<String, TyreLog> {
         val stints = mutableMapOf<String, MutableMap<Int, Pair<String, Int>>>()
         val times = mutableMapOf<String, MutableList<Long>>()
         val tyres = mutableMapOf<String, MutableList<Tyre>>()
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS) return@forEach
-            val lines = runCatching { org.json.JSONObject(line.substring(TS)).optJSONObject("Lines") }.getOrNull() ?: return@forEach
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val lines = runCatching { org.json.JSONObject(line.substring(streamPrefixLength(line))).optJSONObject("Lines") }.getOrNull() ?: return@forEach
             val t = streamStart + offsetMs(line)
             lines.keys().forEach { number ->
                 val d = lines.optJSONObject(number) ?: return@forEach
@@ -320,11 +320,5 @@ object TyreParser {
         return times.mapValues { (n, ts) -> TyreLog(ts.toLongArray(), tyres.getValue(n)) }
     }
 
-    private fun offsetMs(line: String): Long {
-        val h = line.substring(0, 2).toLong()
-        val m = line.substring(3, 5).toLong()
-        val s = line.substring(6, 8).toLong()
-        val ms = line.substring(9, 12).toLong()
-        return ((h * 60 + m) * 60 + s) * 1000 + ms
-    }
+    private fun offsetMs(line: String): Long = streamOffsetMs(line)
 }

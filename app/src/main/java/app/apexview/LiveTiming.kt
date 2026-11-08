@@ -15,6 +15,7 @@ import java.net.URL
 import java.time.Instant
 import java.util.Base64
 import java.util.zip.Inflater
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -394,16 +395,39 @@ class StateParse(val states: Map<String, StateLog>, val crossings: List<Pair<Str
  * File formats follow FastF1's parser: jsonStream lines are "HH:MM:SS.mmm" + JSON, and the ".z"
  * streams hold base64 raw-deflate JSON.
  */
+/**
+ * A jsonStream line's prefix: its offset from the stream's start, "HH:MM:SS.mmm", with "d." in
+ * front once F1's recorder has been running more than a day (it can run across a weekend; the
+ * 2026 Mexico race's radio was all "1.02:32:50.914"). Read as a fixed 12 characters, every line
+ * from that point on was dropped, and the radio stopped there.
+ */
+private val STREAM_PREFIX = Regex("""^\uFEFF?(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2})\.(\d{3})""")
+
+/** How many characters the prefix takes, so the payload starts there; the whole line if it has none. */
+internal fun streamPrefixLength(line: String): Int = STREAM_PREFIX.find(line)?.range?.last?.plus(1) ?: line.length
+
+/** The line's offset from the stream's start, in ms. */
+internal fun streamOffsetMs(line: String): Long {
+    val g = STREAM_PREFIX.find(line)?.groupValues ?: throw IllegalArgumentException("no stream offset")
+    val days = g[1].ifEmpty { "0" }.toLong()
+    return (((days * 24 + g[2].toLong()) * 60 + g[3].toLong()) * 60 + g[4].toLong()) * 1000 + g[5].toLong()
+}
+
 class LiveTimingArchive(private val token: String, private val userAgent: String) {
 
     /** [watchedUtc]: when the video on screen was broadcast, if known; finds the session by time. */
     suspend fun load(ref: SessionRef, watchedUtc: Long? = null): SessionTiming = withContext(Dispatchers.IO) {
         val (path, type) = findSession(ref, watchedUtc)
         val drivers = parseDrivers(JSONObject(fetch(path + "DriverList.json")))
-        val tracks = parsePositions(fetch(path + "Position.z.jsonStream"))
+        val positions = fetch(path + "Position.z.jsonStream")
+        val tracks = parsePositions(positions)
         if (tracks.isEmpty()) throw IOException("The archive has no car positions for this session")
 
-        val streamStart = parseStreamStart(fetch(path + "Heartbeat.jsonStream"))
+        // The heartbeat ties the streams' offsets to the clock. The 2026 Mexico race's put them
+        // 33 hours late, leaving the laps a day and a half away from the cars; where the cars'
+        // own timestamps disagree with it by more than a minute, they're the ones to trust.
+        val heartbeat = parseStreamStart(fetch(path + "Heartbeat.jsonStream"))
+        val streamStart = positionsStreamStart(positions)?.takeIf { abs(it - heartbeat) > STREAM_START_SLACK_MS } ?: heartbeat
         val timingStream = runCatching { fetch(path + "TimingData.jsonStream") }.getOrNull()
         val parsed = timingStream?.let { runCatching { parseStates(it, streamStart) }.getOrNull() }
             ?: StateParse(emptyMap(), emptyList())
@@ -435,6 +459,7 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
             .onFailure { android.util.Log.w("ApexviewRadio", "archive radio for $path: ${it.message}") }
             .getOrDefault(emptyList())
         val isRace = type.contains("Race", ignoreCase = true)
+        val totalLaps = if (isRace) runCatching { parseTotalLaps(fetch(path + "LapCount.jsonStream")) }.getOrNull() else null
         val grid = if (isRace && line != null) findGrid(TrackGeometry(outline), built, chequered) else null
 
         SessionTiming(
@@ -455,18 +480,26 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
             tyres = tyres,
             marshalSectors = circuit?.sectors.orEmpty(),
             flags = flags,
+            totalLaps = totalLaps,
             clock = runCatching {
                 SessionClock(parseClock(fetch(path + "ExtrapolatedClock.jsonStream"), streamStart), parseParts(timingStream.orEmpty(), streamStart))
             }.getOrDefault(SessionClock.NONE),
         ).also { it.startLine = grid?.startLine }
     }
 
+    /** LapCount.jsonStream: the race distance, as last given (it can change when a race is shortened). */
+    internal fun parseTotalLaps(stream: String): Int? =
+        stream.lineSequence().mapNotNull { line ->
+            if (line.length <= streamPrefixLength(line)) null
+            else runCatching { JSONObject(line.substring(streamPrefixLength(line))) }.getOrNull()?.takeIf { it.has("TotalLaps") }?.optInt("TotalLaps")
+        }.lastOrNull()?.takeIf { it > 0 }
+
     /** TeamRadio.jsonStream: each line adds Captures, as a list or as numbered entries. */
     internal fun parseRadio(stream: String): List<RadioClip> {
         val clips = mutableListOf<RadioClip>()
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            runCatching { JSONObject(line.substring(TS_LENGTH)) }.getOrNull()?.let { addRadio(it, clips) }
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            runCatching { JSONObject(line.substring(streamPrefixLength(line))) }.getOrNull()?.let { addRadio(it, clips) }
         }
         return clips.sortedBy { it.utc }
     }
@@ -489,8 +522,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     /** The first time the session status went to Started (for a race, the formation lap). */
     internal fun parseSessionStarted(stream: String, streamStart: Long): Long? {
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            val status = runCatching { JSONObject(line.substring(TS_LENGTH)).optString("Status") }.getOrNull()
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val status = runCatching { JSONObject(line.substring(streamPrefixLength(line))).optString("Status") }.getOrNull()
             if (status == "Started") return streamStart + offsetMs(line)
         }
         return null
@@ -500,8 +533,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     private fun controlMessages(stream: String, streamStart: Long): List<Pair<JSONObject, Long>> {
         val out = mutableListOf<Pair<JSONObject, Long>>()
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            val messages = runCatching { JSONObject(line.substring(TS_LENGTH)).opt("Messages") }.getOrNull() ?: return@forEach
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val messages = runCatching { JSONObject(line.substring(streamPrefixLength(line))).opt("Messages") }.getOrNull() ?: return@forEach
             val list = when (messages) {
                 is org.json.JSONArray -> (0 until messages.length()).map { messages.getJSONObject(it) }
                 is JSONObject -> messages.keys().asSequence().mapNotNull { messages.optJSONObject(it) }.toList()
@@ -602,8 +635,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     /** TrackStatus.jsonStream: the whole track's status code as it changes. */
     internal fun parseTrackStatus(stream: String, streamStart: Long): List<Pair<Long, Int>> =
         stream.lineSequence().mapNotNull { line ->
-            if (line.length <= TS_LENGTH) return@mapNotNull null
-            val code = runCatching { JSONObject(line.substring(TS_LENGTH)).optString("Status").toInt() }.getOrNull()
+            if (line.length <= streamPrefixLength(line)) return@mapNotNull null
+            val code = runCatching { JSONObject(line.substring(streamPrefixLength(line))).optString("Status").toInt() }.getOrNull()
                 ?: return@mapNotNull null
             streamStart + offsetMs(line) to code
         }.toList()
@@ -615,8 +648,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     internal fun parseClock(stream: String, streamStart: Long): List<SessionClock.Mark> {
         val marks = mutableListOf<SessionClock.Mark>()
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            val json = runCatching { JSONObject(line.substring(TS_LENGTH)) }.getOrNull() ?: return@forEach
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val json = runCatching { JSONObject(line.substring(streamPrefixLength(line))) }.getOrNull() ?: return@forEach
             val utc = json.optString("Utc").takeIf { it.isNotEmpty() }
                 ?.let { text -> runCatching { java.time.Instant.parse(if (text.endsWith("Z")) text else text + "Z").toEpochMilli() }.getOrNull() }
                 ?: (streamStart + offsetMs(line))
@@ -640,7 +673,7 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     /** Which part of qualifying is running, as TimingData says when it changes. */
     internal fun parseParts(stream: String, streamStart: Long): List<Pair<Long, Int>> =
         stream.lineSequence().mapNotNull { line ->
-            if (line.length <= TS_LENGTH) return@mapNotNull null
+            if (line.length <= streamPrefixLength(line)) return@mapNotNull null
             val part = SESSION_PART.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: return@mapNotNull null
             streamStart + offsetMs(line) to part
         }.toList()
@@ -850,8 +883,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
     internal fun parsePositions(stream: String): Map<String, TrackBuilder> {
         val tracks = mutableMapOf<String, TrackBuilder>()
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            val json = runCatching { JSONObject(inflate(line.substring(TS_LENGTH))) }.getOrNull() ?: return@forEach
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val json = runCatching { JSONObject(inflate(line.substring(streamPrefixLength(line)))) }.getOrNull() ?: return@forEach
             addPositions(json, tracks)
         }
         return tracks
@@ -867,8 +900,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
             lines.forEach { line ->
                 ensureActive()
                 val text = line.removePrefix("\uFEFF")
-                if (text.length <= TS_LENGTH) return@forEach
-                runCatching { JSONObject(inflate(text.substring(TS_LENGTH))) }.getOrNull()?.let { addCarData(it, cars) }
+                if (text.length <= streamPrefixLength(text)) return@forEach
+                runCatching { JSONObject(inflate(text.substring(streamPrefixLength(text)))) }.getOrNull()?.let { addCarData(it, cars) }
             }
         }
         cars.mapValues { it.value.build() }
@@ -904,14 +937,35 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         }
     }
 
-    /** jsonStream lines carry an offset from the stream start; the heartbeat ties it to UTC. */
+    /**
+     * jsonStream lines carry an offset from the stream start; the heartbeat ties it to UTC. The
+     * median of its first beats, so one odd beat can't move every time in the session.
+     */
     internal fun parseStreamStart(stream: String): Long {
-        stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            val utc = runCatching { JSONObject(line.substring(TS_LENGTH)).getString("Utc") }.getOrNull() ?: return@forEach
-            return Instant.parse(utc).toEpochMilli() - offsetMs(line)
-        }
-        throw IOException("The archive's heartbeat has no clock")
+        val starts = stream.lineSequence().mapNotNull { line ->
+            if (line.length <= streamPrefixLength(line)) return@mapNotNull null
+            val utc = runCatching { JSONObject(line.substring(streamPrefixLength(line))).getString("Utc") }.getOrNull() ?: return@mapNotNull null
+            runCatching { Instant.parse(utc).toEpochMilli() - offsetMs(line) }.getOrNull()
+        }.take(START_SAMPLES).toList().sorted()
+        if (starts.isEmpty()) throw IOException("The archive's heartbeat has no clock")
+        return starts[starts.size / 2]
+    }
+
+    /**
+     * The stream start the car positions imply: each line's latest sample time less the line's
+     * offset (the line goes out a moment after its samples, so this runs a touch early).
+     */
+    internal fun positionsStreamStart(stream: String): Long? {
+        val starts = stream.lineSequence().mapNotNull { line ->
+            if (line.length <= streamPrefixLength(line)) return@mapNotNull null
+            val json = runCatching { JSONObject(inflate(line.substring(streamPrefixLength(line)))) }.getOrNull() ?: return@mapNotNull null
+            val samples = json.optJSONArray("Position") ?: return@mapNotNull null
+            val latest = (0 until samples.length()).mapNotNull { i ->
+                runCatching { Instant.parse(samples.getJSONObject(i).getString("Timestamp")).toEpochMilli() }.getOrNull()
+            }.maxOrNull() ?: return@mapNotNull null
+            runCatching { latest - offsetMs(line) }.getOrNull()
+        }.take(START_SAMPLES).toList().sorted()
+        return if (starts.isEmpty()) null else starts[starts.size / 2]
     }
 
     internal fun parseStates(stream: String, streamStart: Long): StateParse {
@@ -922,8 +976,8 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         val laps = mutableMapOf<String, Int>()
 
         stream.lineSequence().forEach { line ->
-            if (line.length <= TS_LENGTH) return@forEach
-            val lines = runCatching { JSONObject(line.substring(TS_LENGTH)).optJSONObject("Lines") }.getOrNull()
+            if (line.length <= streamPrefixLength(line)) return@forEach
+            val lines = runCatching { JSONObject(line.substring(streamPrefixLength(line))).optJSONObject("Lines") }.getOrNull()
                 ?: return@forEach
             val time = streamStart + offsetMs(line)
             lines.keys().forEach { number ->
@@ -1018,21 +1072,17 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         }
     }
 
-    /** "HH:MM:SS.mmm" at the start of a jsonStream line, in ms. */
-    private fun offsetMs(line: String): Long {
-        val h = line.substring(0, 2).toLong()
-        val m = line.substring(3, 5).toLong()
-        val s = line.substring(6, 8).toLong()
-        val ms = line.substring(9, 12).toLong()
-        return ((h * 60 + m) * 60 + s) * 1000 + ms
-    }
+    private fun offsetMs(line: String): Long = streamOffsetMs(line)
 
     private val WILL_AT = Regex("""^(?:THE )?([A-Z0-9 ]+?) WILL (RESUME|RESTART|START) AT (\d{1,2}):(\d{2})""")
     private val ESTIMATED = Regex("""ESTIMATED TIME OF (?:THE )?([A-Z0-9 ]+?) (RESUMPTION|RESTART|START) ?-? ?(\d{1,2}):(\d{2})""")
 
     companion object {
         internal const val BASE = "https://livetiming.formula1.com/static/"
-        private const val TS_LENGTH = 12
+        /** Lines read to find a stream's start. */
+        private const val START_SAMPLES = 50
+        /** The heartbeat and the car positions may disagree by this much before the cars win. */
+        private const val STREAM_START_SLACK_MS = 60_000L
         private val SESSION_PART = Regex("\"SessionPart\":(\\d+)")
         /** A video may start a little before its session officially does (build-up). */
         private const val SESSION_SLACK_MS = 30 * 60_000L

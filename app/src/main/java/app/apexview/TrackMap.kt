@@ -160,7 +160,9 @@ internal fun rememberMapTime(app: AppState): Long {
     return now
 }
 
+/** Every car on track at [now]; one out of the race (retired, or stopped) is left off every map. */
 internal fun carsAt(timing: SessionTiming, now: Long) = timing.tracks.mapNotNull { (number, track) ->
+    if (timing.laps[number]?.retiredAt(now) == true) return@mapNotNull null
     track.atOrFirst(now)?.let { (x, y) -> Car(number, x, y, timing.states[number]?.at(now) ?: LapState.UNKNOWN) }
 }
 

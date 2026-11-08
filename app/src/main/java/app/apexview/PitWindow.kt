@@ -58,6 +58,9 @@ internal object PitWindow {
     /** A step round the lap as the shorter way: -0.5..0.5. */
     private fun centred(f: Float) = (f + 0.5f).mod(1f) - 0.5f
 
+    /** Seconds from F1's gap text ("+1.234"); null for a lap down ("1L", "1 LAP") or none. */
+    fun gapSeconds(text: String?): Float? = text?.trim()?.removePrefix("+")?.toFloatOrNull()
+
     /** Where a car [lapFraction] into the lap would come back out after a stop, in the same terms. */
     fun ghost(lapFraction: Float, lossMs: Long, lapMs: Long): Float = (lapFraction - lossMs.toFloat() / lapMs).mod(1f)
 
@@ -108,7 +111,12 @@ class LapProfile private constructor(private val fractions: FloatArray) {
     fun timeFraction(progress: Float): Float {
         val x = progress.mod(1f) * BINS
         val i = x.toInt().coerceAtMost(BINS - 1)
-        return fractions[i] + (fractions[i + 1] - fractions[i]) * (x - i)
+        // Across the line the fraction wraps from nearly 1 to nearly 0: the short way round, not
+        // back through the whole lap (cars spun backwards round the circle as they crossed it).
+        var step = fractions[i + 1] - fractions[i]
+        if (step < -0.5f) step += 1f
+        if (step > 0.5f) step -= 1f
+        return (fractions[i] + step * (x - i)).mod(1f)
     }
 
     companion object {

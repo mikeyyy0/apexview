@@ -2,6 +2,7 @@ package app.apexview
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PitWindowTest {
@@ -107,6 +108,24 @@ class PitWindowTest {
         assertEquals(0f, profile.timeFraction(0.3f), 0.01f)
         assertEquals(0.2f, profile.timeFraction(0.5f), 0.01f)
         assertEquals(0.8f, profile.timeFraction(0.1f), 0.01f)
+    }
+
+    @Test
+    fun crossingTheLineGoesTheShortWayRound() {
+        // The line a hair past the outline's start: the profile wraps inside its first step.
+        val samples = (0..100).map { s -> s * 1_000L to (0.002f + s / 100f).mod(1f) }
+        val profile = LapProfile.from(samples, 100_000)!!
+        listOf(0f, 0.001f, 0.002f, 0.003f, 0.004f).forEach { p ->
+            val f = profile.timeFraction(p)
+            assertTrue("$p read as $f", f > 0.99f || f < 0.01f)
+        }
+    }
+
+    @Test
+    fun gapsReadAsSeconds() {
+        assertEquals(1.234f, PitWindow.gapSeconds("+1.234")!!, 0.0001f)
+        assertNull(PitWindow.gapSeconds("1L"))
+        assertNull(PitWindow.gapSeconds(null))
     }
 
     @Test

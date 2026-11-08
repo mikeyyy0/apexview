@@ -104,6 +104,35 @@ class LiveTimingTest {
     }
 
     @Test
+    fun aStreamPastADayKeepsItsLines() {
+        // F1's recorder can run across a weekend; past a day its offsets gain a "d." in front.
+        val radio = listOf(
+            "23:59:59.000{\"Captures\":[{\"Utc\":\"2026-11-01T19:55:24.566Z\",\"RacingNumber\":\"50\",\"Path\":\"TeamRadio/A.mp3\"}]}",
+            "1.02:36:53.637{\"Captures\":{\"1\":{\"Utc\":\"2026-11-01T19:59:28.007Z\",\"RacingNumber\":\"1\",\"Path\":\"TeamRadio/B.mp3\"}}}",
+        ).joinToString("\r\n")
+        assertEquals(listOf("TeamRadio/A.mp3", "TeamRadio/B.mp3"), archive.parseRadio(radio).map { it.path })
+        assertEquals(((24 + 2) * 3600 + 36 * 60 + 53) * 1000L + 637, streamOffsetMs("1.02:36:53.637{}"))
+        assertEquals(5_000L, streamOffsetMs("﻿00:00:05.000{}"))
+    }
+
+    @Test
+    fun oneOddBeatDoesntMoveTheStreamStart() {
+        val heartbeat = listOf(
+            stamp(5_000) + "{\"Utc\":\"2026-10-26T05:00:05.0000000Z\"}",
+            stamp(10_000) + "{\"Utc\":\"2026-10-24T20:00:10.0000000Z\"}",
+            stamp(15_000) + "{\"Utc\":\"2026-10-24T20:00:15.0000000Z\"}",
+        ).joinToString("\r\n")
+        assertEquals(t0, archive.parseStreamStart(heartbeat))
+    }
+
+    @Test
+    fun theCarsOwnTimesGiveTheStreamStartToo() {
+        // Each line's newer sample is 220 ms after its offset.
+        val start = assertNotNullAndGet(archive.positionsStreamStart(positionStream()))
+        assertEquals(t0 + 220, start)
+    }
+
+    @Test
     fun lapStatesFollowPitAndLapCount() {
         val timing = listOf(
             stamp(1_000) + "{\"Lines\":{\"44\":{\"InPit\":true,\"NumberOfLaps\":0}},\"_kf\":true}",
