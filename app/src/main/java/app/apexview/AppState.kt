@@ -1189,35 +1189,58 @@ class AppState(
 
     // Track map.
 
+    /**
+     * The map for the session on screen: live timing for a live stream, else the archive. Any
+     * failure (no login yet, a dropped download, F1 not answering) tries again after a pause
+     * rather than leaving the map empty for the rest of the session, until it loads or the
+     * viewer moves on.
+     */
     private fun loadTiming(contentId: Long) {
         timingContentId = contentId
         pitDriver = null
         timing = null
         speedsJob?.cancel()
-        val ref = sessionRefs[contentId]
-        val token = api.ascendon
-        if (ref == null || token == null) {
-            mapStatus = "Map unavailable: F1 TV didn't say which session this is"
-            return
-        }
         mapStatus = "Loading the track map..."
         liveFeed?.cancel()
         liveFeed = scope.launch {
-            // Live or replay is only known once the player has the stream.
-            if (isLiveStream()) {
-                followLive(contentId, ref, token)
-                return@launch
-            }
-            try {
-                // When the picture was broadcast: identifies the session if the title can't.
-                val watched = leaderTile()?.feed?.wallClockMs()
-                val loaded = LiveTimingArchive(token, userAgent).load(ref, watched)
-                if (timingContentId != contentId) return@launch
-                rememberOutline(loaded)
-                showTiming(loaded)
-                mapStatus = if (loaded.outline.isEmpty()) "Couldn't trace the track; showing cars only" else null
-            } catch (e: Exception) {
-                if (timingContentId == contentId) mapStatus = "Map unavailable: ${e.message}"
+            var attempt = 0
+            while (timingContentId == contentId) {
+                val ref = sessionRefs[contentId]
+                val token = api.ascendon
+                val problem = when {
+                    ref == null -> "F1 TV didn't say which session this is"
+                    token == null -> "not signed in to F1's timing yet"
+                    else -> null
+                }
+                if (problem == null) {
+                    // Live or replay is only known once the player has the stream.
+                    if (isLiveStream()) {
+                        // Runs until the viewer moves on, reconnecting itself; back here only
+                        // if it failed outright.
+                        followLive(contentId, ref!!, token!!)
+                        if (timingContentId != contentId) return@launch
+                        kotlinx.coroutines.delay(mapRetryDelayMs(attempt++))
+                        continue
+                    }
+                    try {
+                        // When the picture was broadcast: identifies the session if the title can't.
+                        val watched = leaderTile()?.feed?.wallClockMs()
+                        val loaded = LiveTimingArchive(token!!, userAgent).load(ref!!, watched)
+                        if (timingContentId != contentId) return@launch
+                        rememberOutline(loaded)
+                        showTiming(loaded)
+                        mapStatus = if (loaded.outline.isEmpty()) "Couldn't trace the track; showing cars only" else null
+                        return@launch
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (timingContentId != contentId) return@launch
+                        mapStatus = "Map unavailable: ${e.message}. Trying again…"
+                    }
+                } else {
+                    mapStatus = "Map unavailable: $problem. Trying again…"
+                }
+                kotlinx.coroutines.delay(mapRetryDelayMs(attempt++))
             }
         }
     }
@@ -1245,10 +1268,15 @@ class AppState(
     /** The map's job for the session on screen: an archive load, or a live feed that runs on. */
     private var liveFeed: kotlinx.coroutines.Job? = null
 
+    /**
+     * Whether the stream on screen is live. Known once the player has read the stream's playlist,
+     * well before it's ready to play; a slow start used to be taken for a replay after 15 s, and
+     * a live session then looked for its map in the archive, where it isn't yet.
+     */
     private suspend fun isLiveStream(): Boolean {
-        repeat(60) {
+        repeat(LIVE_CHECK_TRIES) {
             val player = leaderTile()?.feed?.player ?: return false
-            if (player.playbackState == Player.STATE_READY) return player.isCurrentMediaItemLive
+            if (!player.currentTimeline.isEmpty || player.playbackState == Player.STATE_READY) return player.isCurrentMediaItemLive
             kotlinx.coroutines.delay(250)
         }
         return false
@@ -1276,7 +1304,7 @@ class AppState(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (timingContentId == contentId) mapStatus = "Live map unavailable: ${e.message}"
+            if (timingContentId == contentId) mapStatus = "Live map unavailable: ${e.message}. Trying again…"
         }
     }
 
@@ -2587,6 +2615,12 @@ class AppState(
         const val PERMISSION_NOTE =
             "Android's speech recogniser needs the microphone permission to transcribe. The app never records you."
         private const val TRANSCRIBE_RETRY_MS = 120_000L
+        /** A minute of waiting for a stream to say whether it's live. */
+        private const val LIVE_CHECK_TRIES = 240
+
+        /** How long the map waits before trying again, after its [attempt]th failure (from 0). */
+        internal fun mapRetryDelayMs(attempt: Int): Long = MAP_RETRY_MS.getOrElse(attempt) { MAP_RETRY_MS.last() }
+        private val MAP_RETRY_MS = listOf(3_000L, 10_000L, 30_000L, 60_000L)
         /** The feeds' volume while a radio clip plays: silent, so the radio is clear. */
         private const val RADIO_DUCK = 0f
         private const val PREF_RECENTS = "recents"
