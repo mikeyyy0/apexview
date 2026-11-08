@@ -72,6 +72,19 @@ enum class MapMode(val label: String) {
 }
 
 /**
+ * What to offer next while watching [watching] live: something that wasn't live when it was
+ * opened ([atStart]), or, once it's gone off air, anything live. Never what's on screen or
+ * something already turned down.
+ */
+internal fun pickNextLive(live: List<CatalogItem>, watching: Long, atStart: Set<Long>, playing: Set<Long>, declined: Set<Long>): CatalogItem? {
+    val ended = live.none { it.contentId == watching }
+    return live.firstOrNull { item ->
+        item.contentId > 0 && item.contentId !in playing && item.contentId !in declined &&
+            (ended || item.contentId !in atStart)
+    }
+}
+
+/**
  * Where a panel over the feeds sits, in canvas pixels: first in the biggest space the feeds
  * leave, and once dragged, kept (as fractions of the screen) for next time. Its size too, once
  * resized by hand; until then its default.
@@ -687,12 +700,54 @@ class AppState(
      * A failed check leaves things as they are.
      */
     suspend fun refreshLive() {
-        if (auth != AuthState.SIGNED_IN || (tiles.isNotEmpty() && !browsing)) return
+        if (auth != AuthState.SIGNED_IN) return
+        val watching = tiles.isNotEmpty() && !browsing
+        // Watching a replay, there's nothing to offer.
+        if (watching && !isLive) return
         val newLive = runCatching { api.prepare(); api.liveNow() }.getOrNull() ?: return
+        if (watching) {
+            offerNextLive(newLive)
+            return
+        }
         if (newLive.map { it.contentId } == liveNow.map { it.contentId }) return
         liveNow.clear()
         liveNow.addAll(newLive)
         latestWeekend()?.let(::loadWeekend)
+    }
+
+    // What's on next: the race after the pre-race show, the post-race show after the race.
+
+    /** Something else live to switch to, offered in a note while watching live. */
+    var nextLive by mutableStateOf<CatalogItem?>(null)
+        private set
+    /** What was live when the session on screen was opened, and for which content. */
+    private var liveAtStart: Pair<Long, Set<Long>>? = null
+    private val declinedLive = mutableSetOf<Long>()
+
+    /**
+     * Offers what's next, once: something that's gone live since this session was opened, or,
+     * when what's on screen has gone off air, whatever is live in its place.
+     */
+    internal fun offerNextLive(live: List<CatalogItem>) {
+        val watching = leaderTile()?.contentId ?: return
+        val ids = live.map { it.contentId }.toSet()
+        val atStart = liveAtStart?.takeIf { it.first == watching }?.second
+            ?: ids.also { liveAtStart = watching to it }
+        nextLive = pickNextLive(live, watching, atStart, tiles.map { it.contentId }.toSet(), declinedLive)
+            ?: nextLive?.takeIf { it.contentId in ids }
+    }
+
+    fun declineNextLive() {
+        nextLive?.let { declinedLive += it.contentId }
+        nextLive = null
+    }
+
+    /** Leaves what's on screen for what's next, starting on its main broadcast. */
+    fun switchToNextLive() {
+        val item = nextLive ?: return
+        nextLive = null
+        stopAll()
+        watch(item, start = true)
     }
 
     /** Fetched fresh each time, so sessions flip from upcoming to live to replay as the weekend runs. */
@@ -729,13 +784,13 @@ class AppState(
     }
 
     /** Plays a catalog item; a show or documentary series opens its page of episodes instead. */
-    fun watch(item: CatalogItem) {
+    fun watch(item: CatalogItem, start: Boolean = false) {
         item.pageId?.let { open(Screen.Collection(it, item.title)); return }
         // Sessions are titled by their weekend in the viewer ("Mexico City Grand Prix · Race").
         val session = weekendContent.values.any { c -> c.sessions.any { it.contentId == item.contentId } }
         // Live events carry their weekend's name as their subtitle.
         val meeting = item.meeting.ifEmpty { if (item.live) item.subtitle.orEmpty() else "" }
-        openPicker(item.contentId, if ((session || item.live) && meeting.isNotEmpty()) "$meeting · ${item.title}" else item.title, item.image)
+        openPicker(item.contentId, if ((session || item.live) && meeting.isNotEmpty()) "$meeting · ${item.title}" else item.title, item.image, start)
     }
 
     /** This season's weekend a video belongs to, for its Weekend button. */
@@ -917,7 +972,8 @@ class AppState(
     // Choosing feeds.
 
     /** Opens the feed sheet for a session; feeds already on screen show as picked. */
-    fun openPicker(contentId: Long, title: String, image: String? = null) {
+    /** [start]: begin on the main broadcast straight away rather than waiting for a choice. */
+    fun openPicker(contentId: Long, title: String, image: String? = null, start: Boolean = false) {
         if (auth != AuthState.SIGNED_IN) {
             message = "Sign in to watch."
             return
@@ -938,6 +994,7 @@ class AppState(
                 } else if (!playingThis) {
                     // Nothing playing yet: start with the main broadcast ticked.
                     sheet.selected.add(list.firstOrNull { it.isDefault } ?: list.first())
+                    if (start) watchPicked()
                 }
             } catch (e: Exception) {
                 sheet.error = "Couldn't load this session's feeds: ${e.message}"
@@ -2406,6 +2463,8 @@ class AppState(
         // Closing the viewer keeps the spot, so Continue watching can bring it back.
         saveWatch()
         votePromptOpen = false
+        nextLive = null
+        liveAtStart = null
         tiles.forEach { it.feed.release() }
         tiles.clear()
         sessions.clear()

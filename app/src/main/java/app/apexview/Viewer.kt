@@ -410,6 +410,7 @@ fun ViewerScreen(app: AppState) {
         Messages(app, Modifier.zIndex(CHROME_Z + 1).align(Alignment.Center))
         // In the corner, or centred where the screen is too narrow for a corner to mean much.
         VotePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(if (compactWidth) Alignment.BottomCenter else Alignment.BottomEnd))
+        NextLivePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(if (compactWidth) Alignment.BottomCenter else Alignment.BottomEnd))
 
         // The explanation overlay, above everything. Shown once by itself, the first time.
         Box(Modifier.fillMaxSize().zIndex(CHROME_Z + 2)) {
@@ -1308,6 +1309,58 @@ private val VOTE_SIDE_SHEET = 840.dp
  * Near the end of a live Grand Prix: a note in the corner offering F1's Driver of the Day vote.
  * Nothing stops for it, and it goes by itself after a minute if left alone.
  */
+/**
+ * Something else has gone live while watching (the race after the pre-race show, the post-race
+ * show after the race): a note offering to switch. It stays until it's answered or that goes off air.
+ */
+@Composable
+private fun NextLivePrompt(app: AppState, modifier: Modifier) {
+    val fade = tween<Float>(Motion.SCREEN_MS, easing = EaseOut)
+    val slide = tween<IntOffset>(Motion.SCREEN_MS, easing = EaseOut)
+    // Clear of the playback controls while they're up.
+    val lift by animateDpAsState(
+        if (app.chromeVisible && !app.arranging) 110.dp else 0.dp,
+        tween(Motion.SCREEN_MS, easing = EaseOut),
+        label = "nextLift",
+    )
+    // Kept while it fades out.
+    var shown by remember { mutableStateOf<CatalogItem?>(null) }
+    app.nextLive?.let { shown = it }
+    AnimatedVisibility(
+        app.nextLive != null && !app.inPip && !app.votePromptOpen,
+        modifier.padding(bottom = lift),
+        enter = fadeIn(fade) + slideInVertically(slide) { it / 3 },
+        exit = fadeOut(fade) + slideOutVertically(slide) { it / 3 },
+    ) {
+        val item = shown ?: return@AnimatedVisibility
+        Column(
+            Modifier
+                .navigationBarsPadding()
+                .padding(20.dp)
+                .widthIn(max = 360.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Ink.surface)
+                .pointerInput(Unit) { detectTapGestures { } }
+                .padding(20.dp)
+        ) {
+            Row {
+                Column(Modifier.weight(1f)) {
+                    Text("${item.title} is live", style = Type.headline)
+                    Text(
+                        "Switch to it now? It starts on the main broadcast.",
+                        style = Type.subhead,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                Glyph(Icons.Rounded.Close, "Not now", size = 20, modifier = Modifier.offset(12.dp, (-12).dp), onClick = app::declineNextLive)
+            }
+            Row(Modifier.padding(top = 16.dp)) {
+                PrimaryButton("Switch", onClick = app::switchToNextLive)
+            }
+        }
+    }
+}
+
 @Composable
 private fun VotePrompt(app: AppState, modifier: Modifier) {
     val activity = LocalContext.current as Activity
