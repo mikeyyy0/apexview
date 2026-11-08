@@ -133,6 +133,18 @@ fun FeedPickerSheet(app: AppState, picker: FeedPicker) {
 
             val adds = picker.selected.size
             val drops = picker.removing.size
+            // On air and nothing playing: where to start is chosen before anything shows, so
+            // joining late never shows how it's gone.
+            if (picker.live && app.tiles.isEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    SecondaryButton("From the start", Modifier.weight(1f)) { if (adds > 0) app.watchPicked(fromStart = true) }
+                    PrimaryButton("Watch live", modifier = Modifier.weight(1f), enabled = adds > 0) { app.watchPicked() }
+                }
+                return@Column
+            }
             PrimaryButton(
                 when {
                     adds == 0 && drops == 0 -> "Pick a feed"
@@ -143,7 +155,7 @@ fun FeedPickerSheet(app: AppState, picker: FeedPicker) {
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                 enabled = adds > 0 || drops > 0,
-                onClick = app::watchPicked,
+                onClick = { app.watchPicked() },
             )
         }
     }

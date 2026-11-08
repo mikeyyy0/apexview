@@ -411,7 +411,6 @@ fun ViewerScreen(app: AppState) {
         // In the corner, or centred where the screen is too narrow for a corner to mean much.
         VotePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(if (compactWidth) Alignment.BottomCenter else Alignment.BottomEnd))
         NextLivePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(if (compactWidth) Alignment.BottomCenter else Alignment.BottomEnd))
-        JoinedLatePrompt(app, Modifier.zIndex(CHROME_Z + 1).align(if (compactWidth) Alignment.BottomCenter else Alignment.BottomEnd))
 
         // The explanation overlay, above everything. Shown once by itself, the first time.
         Box(Modifier.fillMaxSize().zIndex(CHROME_Z + 2)) {
@@ -1303,7 +1302,6 @@ private fun BufferingRing(feed: FeedPlayer, modifier: Modifier) {
 
 private const val REMOTE_SCRUB_SETTLE_MS = 800L
 private const val VOTE_PROMPT_MS = 60_000L
-private const val JOINED_LATE_PROMPT_MS = 60_000L
 /** Below this width Chrome's vote sheet comes up from the bottom; at or above, in from the side. */
 private val VOTE_SIDE_SHEET = 840.dp
 
@@ -1311,58 +1309,6 @@ private val VOTE_SIDE_SHEET = 840.dp
  * Near the end of a live Grand Prix: a note in the corner offering F1's Driver of the Day vote.
  * Nothing stops for it, and it goes by itself after a minute if left alone.
  */
-/**
- * Opened a live session that's been on a while: a note offering it from the start (lights out,
- * in a race) or carrying on live. Goes once answered, or by itself after a minute, staying live.
- */
-@Composable
-private fun JoinedLatePrompt(app: AppState, modifier: Modifier) {
-    LaunchedEffect(app.joinedLateMs) {
-        if (app.joinedLateMs != null) {
-            delay(JOINED_LATE_PROMPT_MS)
-            app.stayLive()
-        }
-    }
-    val fade = tween<Float>(Motion.SCREEN_MS, easing = EaseOut)
-    val slide = tween<IntOffset>(Motion.SCREEN_MS, easing = EaseOut)
-    val lift by animateDpAsState(
-        if (app.chromeVisible && !app.arranging) 110.dp else 0.dp,
-        tween(Motion.SCREEN_MS, easing = EaseOut),
-        label = "lateLift",
-    )
-    // Kept while it fades out.
-    var shown by remember { mutableStateOf(0L) }
-    app.joinedLateMs?.let { shown = it }
-    AnimatedVisibility(
-        app.joinedLateMs != null && !app.inPip,
-        modifier.padding(bottom = lift),
-        enter = fadeIn(fade) + slideInVertically(slide) { it / 3 },
-        exit = fadeOut(fade) + slideOutVertically(slide) { it / 3 },
-    ) {
-        val minutes = shown / 60_000
-        Column(
-            Modifier
-                .navigationBarsPadding()
-                .padding(20.dp)
-                .widthIn(max = 360.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(Ink.surface)
-                .pointerInput(Unit) { detectTapGestures { } }
-                .padding(20.dp)
-        ) {
-            Text(
-                if (minutes >= 60) "Started ${minutes / 60} h ${minutes % 60} min ago" else "Started $minutes min ago",
-                style = Type.headline,
-            )
-            Text("Watch from the start, or carry on live.", style = Type.subhead, modifier = Modifier.padding(top = 4.dp))
-            Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PrimaryButton(if (app.lightsOutPositionMs != null) "From lights out" else "From the start", onClick = app::watchFromStart)
-                SecondaryButton("Stay live", onClick = app::stayLive)
-            }
-        }
-    }
-}
-
 /**
  * Something else has gone live while watching (the race after the pre-race show, the post-race
  * show after the race): a note offering to switch. It stays until it's answered or that goes off air.
