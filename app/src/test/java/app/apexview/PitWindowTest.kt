@@ -135,6 +135,13 @@ class PitWindowTest {
     }
 
     @Test
+    fun lapTimesReadAsF1WritesThem() {
+        assertEquals(72_345L, PitWindow.lapTimeMs("1:12.345"))
+        assertEquals(58_901L, PitWindow.lapTimeMs("58.901"))
+        assertNull(PitWindow.lapTimeMs(""))
+    }
+
+    @Test
     fun gapsReadAsSeconds() {
         assertEquals(1.234f, PitWindow.gapSeconds("+1.234")!!, 0.0001f)
         assertNull(PitWindow.gapSeconds("1L"))

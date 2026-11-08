@@ -130,6 +130,13 @@ class FeedPlayer(
             .setPreferredTextLanguage(commentary)
             .build()
         player.addListener(object : Player.Listener {
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                if (!startAtBeginning || timeline.isEmpty) return
+                if (timeline.getWindow(player.currentMediaItemIndex, Timeline.Window()).isPlaceholder) return
+                startAtBeginning = false
+                player.seekTo(0L)
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 state = when (playbackState) {
                     Player.STATE_BUFFERING -> "Buffering"
@@ -203,6 +210,16 @@ class FeedPlayer(
         player.prepare()
     }
 
+    /**
+     * Go to the earliest moment the stream keeps as soon as it's known. A start position given
+     * with a live stream is dropped once the player learns it's live, and it opens at the live
+     * edge instead; this seeks once the real timeline is in.
+     */
+    fun startFromBeginning() {
+        startAtBeginning = true
+    }
+
+    private var startAtBeginning = false
     private var videoOn = true
     private var started = false
     private var viewW = 0

@@ -1185,8 +1185,9 @@ class AppState(
             // A feed added while one fills the screen brings the whole layout back.
             focusTileId = null
             streams.forEach { (channel, stream) ->
-                // From the start: the first position F1 keeps, so nothing after it is seen first.
-                val feed = if (fromStart && joinAt == null) newFeed(stream, 0L) else newFeed(stream)
+                val feed = newFeed(stream)
+                // From the start: the first moment F1 keeps, so nothing after it is seen first.
+                if (fromStart && joinAt == null) feed.startFromBeginning()
                 joinAt?.let(feed.player::seekTo)
                 val tile = Tile(nextTileId++, contentId, channel, feed)
                 tiles.add(tile)

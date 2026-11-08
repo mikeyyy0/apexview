@@ -58,6 +58,15 @@ internal object PitWindow {
     /** A step round the lap as the shorter way: -0.5..0.5. */
     private fun centred(f: Float) = (f + 0.5f).mod(1f) - 0.5f
 
+    /** A lap time as F1 writes it ("1:12.345", or "58.901") in ms; null if it isn't one. */
+    fun lapTimeMs(text: String): Long? {
+        val parts = text.trim().split(':')
+        val seconds = parts.last().toDoubleOrNull() ?: return null
+        val minutes = if (parts.size == 2) parts[0].toLongOrNull() ?: return null else 0L
+        if (parts.size > 2) return null
+        return (minutes * 60_000 + seconds * 1000).toLong().takeIf { it > 0 }
+    }
+
     /** Seconds from F1's gap text ("+1.234"); null for a lap down ("1L", "1 LAP") or none. */
     fun gapSeconds(text: String?): Float? = text?.trim()?.removePrefix("+")?.toFloatOrNull()
 

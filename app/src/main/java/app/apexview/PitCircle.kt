@@ -97,8 +97,10 @@ internal fun rememberPitBasis(app: AppState, timing: SessionTiming, now: Long): 
         leaderLaps!!.pitStops.none { (inUtc, outUtc) -> inUtc < end && outUtc > start } &&
             timing.flags.at((start + end) / 2).track == TrackCondition.CLEAR
     }.takeLast(PitWindow.REFERENCE_LAPS)
+    // Joined live part-way, no lap has been timed here yet: the leader's last lap, as F1 gives it.
     val referenceMs = green.takeIf { it.isNotEmpty() }?.map { (start, end) -> end - start }?.average()?.toLong()
         ?: leaderLaps?.typicalLapMs(now)
+        ?: leaderLaps?.at(now)?.lastLap?.time?.let(PitWindow::lapTimeMs)
     // Laid out in time from the leader's latest green lap; distance stands in until there is one.
     val profileLap = green.lastOrNull()
     val profile = remember(timing.circuitKey, leader, profileLap) {
