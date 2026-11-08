@@ -92,7 +92,6 @@ private const val FRESH_MS = 3_000L
  */
 @Composable
 fun RadioPanel(app: AppState, timing: SessionTiming, width: Float, height: Float, feedScale: Float) {
-    val density = LocalDensity.current
     // Twice a second is plenty for a list.
     var now by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
@@ -112,142 +111,26 @@ fun RadioPanel(app: AppState, timing: SessionTiming, width: Float, height: Float
     // A new clip brings the list down to it.
     LaunchedEffect(clips.size) { if (clips.isNotEmpty()) list.animateScrollToItem(clips.lastIndex) }
 
-    val panelWidth = with(density) { minOf(PANEL_MAX_WIDTH, (width.toDp() - 32.dp)) }
-    if (app.radioX < 0f) {
-        with(density) {
-            val w = panelWidth.toPx()
-            val h = PANEL_MAX_HEIGHT.toPx()
-            val saved = app.savedRadioSpot()
-            if (saved != null && saved.size >= 4 && saved[2] > 0f && saved[3] > 0f) {
-                app.radioW = saved[2] * width
-                app.radioH = saved[3] * height
-            }
-            // The biggest gap the feeds leave, if the panel fits in it; else above the controls.
-            val gap = Layouts.largestFree(app.tileSlots(), width, height)?.takeIf { it.h >= h }
-            when {
-                saved != null -> {
-                    app.radioX = saved[0] * width
-                    app.radioY = saved[1] * height
-                }
-                gap != null -> {
-                    app.radioX = gap.x + (gap.w - w).coerceAtLeast(0f) / 2
-                    app.radioY = gap.y + (gap.h - h) / 2
-                }
-                else -> {
-                    app.radioX = (width - w) / 2
-                    app.radioY = height - h - 120.dp.toPx()
-                }
-            }
-            app.radioX = app.radioX.coerceIn(0f, (width - w).coerceAtLeast(0f))
-            app.radioY = app.radioY.coerceIn(0f, (height - h).coerceAtLeast(0f))
+    FloatingPanel(app, app.radioSpot, "Team radio", "Hide team radio", app::toggleRadio, width, height, feedScale, Modifier.helpAnchor(app, "radio")) {
+        app.transcriptBlocked?.let { note ->
+            Text(
+                "$note Tap to allow.",
+                style = Type.caption,
+                modifier = Modifier
+                    .pressable { ask.launch(android.Manifest.permission.RECORD_AUDIO) }
+                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            )
         }
-    }
-    val shownWidth = if (app.radioW > 0f) with(density) { app.radioW.toDp() } else panelWidth
-    // Where the finger has taken the panel (or its corner) since the gesture began, before
-    // snapping: snapping works from this, so an edge can be pulled back off a line.
-    var rawX by remember { mutableFloatStateOf(0f) }
-    var rawY by remember { mutableFloatStateOf(0f) }
-    var rawW by remember { mutableFloatStateOf(0f) }
-    var rawH by remember { mutableFloatStateOf(0f) }
-    var boxW by remember { mutableFloatStateOf(0f) }
-    var boxH by remember { mutableFloatStateOf(0f) }
-    Box(
-        Modifier
-            .offset { IntOffset(app.radioX.roundToInt(), app.radioY.roundToInt()) }
-            .helpAnchor(app, "radio")
-            .onSizeChanged { boxW = it.width.toFloat(); boxH = it.height.toFloat() }
-    ) {
-        Column(
-            Modifier
-                .width(shownWidth)
-                .then(if (app.radioH > 0f) Modifier.height(with(density) { app.radioH.toDp() }) else Modifier.heightIn(max = PANEL_MAX_HEIGHT))
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color.Black.copy(alpha = 0.72f))
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = { rawX = app.radioX; rawY = app.radioY },
-                            onDragEnd = { app.storeRadioSpot(width, height) },
-                        ) { change, drag ->
-                            change.consume()
-                            rawX += drag.x
-                            rawY += drag.y
-                            var x = rawX
-                            var y = rawY
-                            if (app.snapMode) {
-                                val (xs, ys) = snapLines(app, width, height, feedScale)
-                                x += pull(listOf(x, x + boxW), xs, SNAP.toPx())
-                                y += pull(listOf(y, y + boxH), ys, SNAP.toPx())
-                            }
-                            app.radioX = x.coerceIn(0f, (width - boxW).coerceAtLeast(0f))
-                            app.radioY = y.coerceIn(0f, (height - HEADER_HEIGHT.toPx()).coerceAtLeast(0f))
-                        }
-                    }
-                    .height(HEADER_HEIGHT)
-                    .padding(start = 16.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Team radio", style = Type.headline, modifier = Modifier.weight(1f))
-                Box(Modifier.size(36.dp).pressable(onClick = app::toggleRadio), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Close, "Hide team radio", tint = Ink.secondary, modifier = Modifier.size(18.dp))
-                }
-            }
-            app.transcriptBlocked?.let { note ->
-                Text(
-                    "$note Tap to allow.",
-                    style = Type.caption,
-                    modifier = Modifier
-                        .pressable { ask.launch(android.Manifest.permission.RECORD_AUDIO) }
-                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-                )
-            }
-            if (clips.isEmpty()) {
-                Text(
-                    if (timing.radio.isEmpty()) "No radio in this session yet." else "Radio shows up here as it happens.",
-                    style = Type.footnote,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
-                )
-                return@Column
-            }
-            LazyColumn(Modifier.padding(bottom = 4.dp), state = list) {
-                items(clips, key = { it.path }) { clip -> RadioRow(app, timing, clip, fresh = now - clip.utc < FRESH_MS) }
-            }
+        if (clips.isEmpty()) {
+            Text(
+                if (timing.radio.isEmpty()) "No radio in this session yet." else "Radio shows up here as it happens.",
+                style = Type.footnote,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
+            )
+            return@FloatingPanel
         }
-        // The corner grip: drag to resize, edges snapping like the feeds'.
-        Box(
-            Modifier
-                .align(Alignment.BottomEnd)
-                .size(36.dp)
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragStart = { rawW = boxW; rawH = boxH },
-                        onDragEnd = { app.storeRadioSpot(width, height) },
-                    ) { change, drag ->
-                        change.consume()
-                        rawW += drag.x
-                        rawH += drag.y
-                        var w = rawW
-                        var h = rawH
-                        if (app.snapMode) {
-                            val (xs, ys) = snapLines(app, width, height, feedScale)
-                            w += pull(listOf(app.radioX + w), xs, SNAP.toPx())
-                            h += pull(listOf(app.radioY + h), ys, SNAP.toPx())
-                        }
-                        app.radioW = w.coerceIn(PANEL_MIN_WIDTH.toPx(), (width - app.radioX).coerceAtLeast(PANEL_MIN_WIDTH.toPx()))
-                        app.radioH = h.coerceIn(PANEL_MIN_HEIGHT.toPx(), (height - app.radioY).coerceAtLeast(PANEL_MIN_HEIGHT.toPx()))
-                    }
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            androidx.compose.foundation.Canvas(Modifier.size(12.dp)) {
-                val stroke = 1.5.dp.toPx()
-                val c = Color.White.copy(alpha = 0.45f)
-                drawLine(c, androidx.compose.ui.geometry.Offset(size.width, 0f), androidx.compose.ui.geometry.Offset(0f, size.height), stroke)
-                drawLine(c, androidx.compose.ui.geometry.Offset(size.width, size.height / 2), androidx.compose.ui.geometry.Offset(size.width / 2, size.height), stroke)
-            }
+        LazyColumn(Modifier.padding(bottom = 4.dp), state = list) {
+            items(clips, key = { it.path }) { clip -> RadioRow(app, timing, clip, fresh = now - clip.utc < FRESH_MS) }
         }
     }
 }
@@ -305,5 +188,148 @@ private fun RadioRow(app: AppState, timing: SessionTiming, clip: RadioClip, fres
             tint = Ink.primary,
             modifier = Modifier.size(22.dp),
         )
+    }
+}
+
+/**
+ * A panel over the feeds that stays where it's put: first in the biggest space the feeds leave,
+ * then wherever its title is dragged, at whatever size its corner is dragged to. With Snap on
+ * (Layout), its edges pull onto the screen's, the feeds' and the hinge, as the feeds do.
+ */
+@Composable
+internal fun FloatingPanel(
+    app: AppState,
+    spot: FloatingSpot,
+    title: String,
+    closeLabel: String,
+    onClose: () -> Unit,
+    width: Float,
+    height: Float,
+    feedScale: Float,
+    modifier: Modifier = Modifier,
+    /** Its size until it's resized by hand. */
+    maxWidth: androidx.compose.ui.unit.Dp = PANEL_MAX_WIDTH,
+    maxHeight: androidx.compose.ui.unit.Dp = PANEL_MAX_HEIGHT,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    val density = LocalDensity.current
+    val panelWidth = with(density) { minOf(maxWidth, (width.toDp() - 32.dp)) }
+    if (spot.x < 0f) {
+        with(density) {
+            val w = panelWidth.toPx()
+            val h = maxHeight.toPx()
+            val saved = spot.saved()
+            if (saved != null && saved.size >= 4 && saved[2] > 0f && saved[3] > 0f) {
+                spot.w = saved[2] * width
+                spot.h = saved[3] * height
+            }
+            // The biggest gap the feeds leave, if the panel fits in it; else above the controls.
+            val gap = Layouts.largestFree(app.tileSlots(), width, height)?.takeIf { it.h >= h }
+            when {
+                saved != null -> {
+                    spot.x = saved[0] * width
+                    spot.y = saved[1] * height
+                }
+                gap != null -> {
+                    spot.x = gap.x + (gap.w - w).coerceAtLeast(0f) / 2
+                    spot.y = gap.y + (gap.h - h) / 2
+                }
+                else -> {
+                    spot.x = (width - w) / 2
+                    spot.y = height - h - 120.dp.toPx()
+                }
+            }
+            spot.x = spot.x.coerceIn(0f, (width - w).coerceAtLeast(0f))
+            spot.y = spot.y.coerceIn(0f, (height - h).coerceAtLeast(0f))
+        }
+    }
+    val shownWidth = if (spot.w > 0f) with(density) { spot.w.toDp() } else panelWidth
+    // Where the finger has taken the panel (or its corner) since the gesture began, before
+    // snapping: snapping works from this, so an edge can be pulled back off a line.
+    var rawX by remember { mutableFloatStateOf(0f) }
+    var rawY by remember { mutableFloatStateOf(0f) }
+    var rawW by remember { mutableFloatStateOf(0f) }
+    var rawH by remember { mutableFloatStateOf(0f) }
+    var boxW by remember { mutableFloatStateOf(0f) }
+    var boxH by remember { mutableFloatStateOf(0f) }
+    Box(
+        Modifier
+            .offset { IntOffset(spot.x.roundToInt(), spot.y.roundToInt()) }
+            .then(modifier)
+            .onSizeChanged { boxW = it.width.toFloat(); boxH = it.height.toFloat() }
+    ) {
+        Column(
+            Modifier
+                .width(shownWidth)
+                .then(if (spot.h > 0f) Modifier.height(with(density) { spot.h.toDp() }) else Modifier.heightIn(max = maxHeight))
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.Black.copy(alpha = 0.72f))
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { rawX = spot.x; rawY = spot.y },
+                            onDragEnd = { spot.store(width, height) },
+                        ) { change, drag ->
+                            change.consume()
+                            rawX += drag.x
+                            rawY += drag.y
+                            var x = rawX
+                            var y = rawY
+                            if (app.snapMode) {
+                                val (xs, ys) = snapLines(app, width, height, feedScale)
+                                x += pull(listOf(x, x + boxW), xs, SNAP.toPx())
+                                y += pull(listOf(y, y + boxH), ys, SNAP.toPx())
+                            }
+                            spot.x = x.coerceIn(0f, (width - boxW).coerceAtLeast(0f))
+                            spot.y = y.coerceIn(0f, (height - HEADER_HEIGHT.toPx()).coerceAtLeast(0f))
+                        }
+                    }
+                    .height(HEADER_HEIGHT)
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = Type.headline, modifier = Modifier.weight(1f))
+                Box(Modifier.size(36.dp).pressable(onClick = onClose), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Close, closeLabel, tint = Ink.secondary, modifier = Modifier.size(18.dp))
+                }
+            }
+            content()
+        }
+        // The corner grip: drag to resize, edges snapping like the feeds'.
+        Box(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .size(36.dp)
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { rawW = boxW; rawH = boxH },
+                        onDragEnd = { spot.store(width, height) },
+                    ) { change, drag ->
+                        change.consume()
+                        rawW += drag.x
+                        rawH += drag.y
+                        var w = rawW
+                        var h = rawH
+                        if (app.snapMode) {
+                            val (xs, ys) = snapLines(app, width, height, feedScale)
+                            w += pull(listOf(spot.x + w), xs, SNAP.toPx())
+                            h += pull(listOf(spot.y + h), ys, SNAP.toPx())
+                        }
+                        spot.w = w.coerceIn(PANEL_MIN_WIDTH.toPx(), (width - spot.x).coerceAtLeast(PANEL_MIN_WIDTH.toPx()))
+                        spot.h = h.coerceIn(PANEL_MIN_HEIGHT.toPx(), (height - spot.y).coerceAtLeast(PANEL_MIN_HEIGHT.toPx()))
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            androidx.compose.foundation.Canvas(Modifier.size(12.dp)) {
+                val stroke = 1.5.dp.toPx()
+                val c = Color.White.copy(alpha = 0.45f)
+                drawLine(c, androidx.compose.ui.geometry.Offset(size.width, 0f), androidx.compose.ui.geometry.Offset(0f, size.height), stroke)
+                drawLine(c, androidx.compose.ui.geometry.Offset(size.width, size.height / 2), androidx.compose.ui.geometry.Offset(size.width / 2, size.height), stroke)
+            }
+        }
     }
 }

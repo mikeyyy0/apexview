@@ -209,16 +209,7 @@ private fun PitCircle(app: AppState, timing: SessionTiming, width: Float, height
 
     // The way round matches the circuit's, unless flipped.
     val turn = if (timing.geometry.counterClockwise != app.pitCircleFlipped) -1f else 1f
-    // In the part of the window that's on screen: a window carried over from the track map can
-    // run off the edge, and the circle would go with it.
-    val panel = app.activeMapPanel
-    val (screenW, screenH) = app.canvasSize
-    val left = (-panel.x).coerceIn(0f, width)
-    val top = (-panel.y).coerceIn(0f, height)
-    val right = if (screenW > 0f) (screenW - panel.x).coerceIn(left, width) else width
-    val bottom = if (screenH > 0f) (screenH - panel.y).coerceIn(top, height) else height
-    val centre = Offset((left + right) / 2, (top + bottom) / 2)
-    val radius = (min(right - left, bottom - top) / 2 - with(density) { LABEL_ROOM.toPx() }).coerceAtLeast(1f)
+    val (centre, radius) = pitCircleFrame(app, with(density) { LABEL_ROOM.toPx() })
     val laneRadius = radius * LANE_RADIUS
     fun degrees(f: Float) = -90f + turn * f * 360f
     fun direction(f: Float) = Math.toRadians(degrees(f).toDouble()).let { Offset(cos(it).toFloat(), sin(it).toFloat()) }
@@ -392,8 +383,30 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawChequer(at: Off
     }
 }
 
+/**
+ * The circle's centre (within its window) and radius. It sits in the part of the window that's on
+ * screen: a window carried over from the track map can run off the edge, and the circle with it.
+ */
+internal fun pitCircleFrame(app: AppState, labelRoom: Float): Pair<Offset, Float> {
+    val panel = app.activeMapPanel
+    val (screenW, screenH) = app.canvasSize
+    val left = (-panel.x).coerceIn(0f, panel.w)
+    val top = (-panel.y).coerceIn(0f, panel.h)
+    val right = if (screenW > 0f) (screenW - panel.x).coerceIn(left, panel.w) else panel.w
+    val bottom = if (screenH > 0f) (screenH - panel.y).coerceIn(top, panel.h) else panel.h
+    val radius = (min(right - left, bottom - top) / 2 - labelRoom).coerceAtLeast(1f)
+    return Offset((left + right) / 2, (top + bottom) / 2) to radius
+}
+
+/** True when a touch at ([x], [y]) on the canvas lands on the circle or its labels: what moves it. */
+internal fun pitCircleTouched(app: AppState, x: Float, y: Float, labelRoom: Float): Boolean {
+    val (centre, radius) = pitCircleFrame(app, labelRoom)
+    val panel = app.activeMapPanel
+    return (Offset(x - panel.x, y - panel.y) - centre).getDistance() <= radius + labelRoom
+}
+
 /** Room outside the ring for the labels. */
-private val LABEL_ROOM = 56.dp
+internal val LABEL_ROOM = 56.dp
 /** The pit lane's arc, as a share of the ring's radius. */
 private const val LANE_RADIUS = 0.62f
 /** How often the leader's lap is sampled to lay the circle out in time. */

@@ -71,6 +71,27 @@ enum class MapMode(val label: String) {
     val inWindow get() = this == TRACK || this == PIT
 }
 
+/**
+ * Where a panel over the feeds sits, in canvas pixels: first in the biggest space the feeds
+ * leave, and once dragged, kept (as fractions of the screen) for next time. Its size too, once
+ * resized by hand; until then its default.
+ */
+class FloatingSpot(private val prefs: android.content.SharedPreferences, private val key: String) {
+    var x by mutableFloatStateOf(-1f)
+    var y by mutableFloatStateOf(-1f)
+    var w by mutableFloatStateOf(-1f)
+    var h by mutableFloatStateOf(-1f)
+
+    /** The place, and size if it's been resized, as fractions of the screen: x, y and optionally w, h. */
+    fun saved(): List<Float>? =
+        prefs.getString(key, null)?.split(',')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size >= 2 }
+
+    fun store(width: Float, height: Float) {
+        val size = if (w > 0f && h > 0f) ",${w / width},${h / height}" else ""
+        prefs.edit().putString(key, "${x / width},${y / height}$size").apply()
+    }
+}
+
 /** The track map's own window. Any shape; the track is fitted inside it. */
 class MapPanel {
     var x by mutableFloatStateOf(0f)
@@ -1367,8 +1388,10 @@ class AppState(
             return
         }
         if (laptopActive) rememberBroadcast()
+        // A car whose onboard is up already: tapping it again closes that feed, so the tower and
+        // the maps work as on/off switches. Laptop mode's one feed up top comes back instead.
         tiles.firstOrNull { it.channel == channel }?.let {
-            if (laptopActive) putOnTop(it) else raise(it)
+            if (laptopActive) putOnTop(it) else if (tiles.size > 1) remove(it) else raise(it)
             return
         }
         val now = mapTimeMs() ?: 0L
@@ -1389,6 +1412,11 @@ class AppState(
                 .filter { !it.audible && !it.pinned && !isMainTile(it) }
                 .minWithOrNull(compareBy<Tile>({ interest(it, now) }, { it.mapPickedAt }))
         targetTile = null
+        // Nothing to swap out, but room for another: the onboard joins as a feed of its own.
+        if (target == null && roomForFeeds > 0) {
+            addFeeds(leader.contentId, listOf(channel))
+            return
+        }
         if (target == null) {
             message = if (tiles.size == 1) "Add a feed with +, then tap a car to put its onboard there."
             else if (tiles.none { it.pinned }) "Tap a small feed, then a car, to swap it for the car's onboard."
@@ -1741,27 +1769,17 @@ class AppState(
     /** The clip playing, if any. */
     var radioPlaying by mutableStateOf<RadioClip?>(null)
         private set
-    /**
-     * Where the radio panel sits, in canvas pixels. First shown in the biggest space the feeds
-     * leave; once dragged, kept (as fractions of the screen) for next time.
-     */
-    var radioX by mutableFloatStateOf(-1f)
-    var radioY by mutableFloatStateOf(-1f)
-    /** The panel's size once resized by hand, in canvas pixels; until then its default. */
-    var radioW by mutableFloatStateOf(-1f)
-    var radioH by mutableFloatStateOf(-1f)
+    /** Where the radio panel sits and how big it is. */
+    val radioSpot = FloatingSpot(prefs, PREF_RADIO_SPOT)
 
-    /**
-     * The panel's place, and size if it's been resized, as fractions of the screen: x, y and
-     * optionally w, h.
-     */
-    fun savedRadioSpot(): List<Float>? =
-        prefs.getString(PREF_RADIO_SPOT, null)?.split(',')?.mapNotNull { it.toFloatOrNull() }
-            ?.takeIf { it.size >= 2 }
+    /** The timing tower over the feeds; laptop mode has its own below the hinge. */
+    var towerOpen by mutableStateOf(prefs.getBoolean(PREF_TOWER, false))
+        private set
+    val towerSpot = FloatingSpot(prefs, PREF_TOWER_SPOT)
 
-    fun storeRadioSpot(width: Float, height: Float) {
-        val size = if (radioW > 0f && radioH > 0f) ",${radioW / width},${radioH / height}" else ""
-        prefs.edit().putString(PREF_RADIO_SPOT, "${radioX / width},${radioY / height}$size").apply()
+    fun toggleTower() {
+        towerOpen = !towerOpen
+        prefs.edit().putBoolean(PREF_TOWER, towerOpen).apply()
     }
 
     /** Feed rectangles, for finding open space. */
@@ -2561,6 +2579,8 @@ class AppState(
         private const val PREF_RADIO = "radioOpen"
         private const val PREF_HELP_SEEN = "helpSeen"
         private const val PREF_RADIO_SPOT = "radioSpot"
+        private const val PREF_TOWER = "towerOpen"
+        private const val PREF_TOWER_SPOT = "towerSpot"
         /** Clips this far ahead of the picture get transcribed early, so they're ready on time. */
         private const val TRANSCRIBE_AHEAD_MS = 120_000L
         const val NO_WORDS = "(no words recognised)"

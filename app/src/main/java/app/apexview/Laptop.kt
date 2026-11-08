@@ -115,6 +115,20 @@ fun SessionCountdown(app: AppState, timing: SessionTiming, style: TextStyle, mod
     )
 }
 
+/**
+ * The timing tower over the feeds, for when the phone isn't in laptop mode: the same table, in a
+ * panel that moves and resizes like the radio's.
+ */
+@Composable
+fun TowerPanel(app: AppState, timing: SessionTiming, width: Float, height: Float, feedScale: Float) {
+    FloatingPanel(
+        app, app.towerSpot, "Timing", "Hide timing", app::toggleTower, width, height, feedScale,
+        maxWidth = TOWER_WIDTH, maxHeight = TOWER_HEIGHT,
+    ) {
+        TimingTower(app, timing)
+    }
+}
+
 /** Every driver in running order: last lap, gap to the leader, interval, tyre. Tap a row for their onboard. */
 @Composable
 private fun TimingTower(app: AppState, timing: SessionTiming) {
@@ -246,3 +260,7 @@ fun LaptopPrompt(app: AppState) {
 private fun broadcastName(channel: Channel) = channel.title.split(" ").joinToString(" ") { word ->
     if (word.length <= 2) word.uppercase() else word.lowercase().replaceFirstChar { it.uppercase() }
 }
+
+/** The floating tower's size until it's resized: every column, and about ten drivers. */
+private val TOWER_WIDTH = 380.dp
+private val TOWER_HEIGHT = 340.dp
