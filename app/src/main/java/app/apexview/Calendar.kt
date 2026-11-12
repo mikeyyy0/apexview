@@ -244,6 +244,23 @@ private fun Reminders(app: AppState) {
         style = Type.footnote,
         modifier = Modifier.padding(start = 36.dp, end = 36.dp, top = 8.dp),
     )
+    Column(
+        Modifier
+            .padding(horizontal = 20.dp)
+            .padding(top = 16.dp)
+            .fillMaxWidth()
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .background(Ink.surface)
+            .padding(vertical = 4.dp)
+    ) {
+        SwitchRow("Record live timing", app.recordingOn, app::chooseRecording)
+        if (app.recordingOn) SwitchRow("Practice sessions too", app.recordingAll, app::chooseRecordingAll)
+    }
+    Text(
+        "F1 only sends live timing from the moment you join it. Recording each session from its start in the background means the track map has all of it, however late you start watching or however far back you go.",
+        style = Type.footnote,
+        modifier = Modifier.padding(start = 36.dp, end = 36.dp, top = 8.dp),
+    )
 }
 
 /**

@@ -48,27 +48,25 @@ class SavedOutline(val outline: FloatArray, val hasStartFinish: Boolean) {
  * the topic, the change and its UTC time.
  */
 class LiveTimingFeed(
+    private val context: android.content.Context,
     private val token: String,
     private val userAgent: String,
     private val ref: SessionRef,
     private val saved: SavedOutline?,
 ) {
     private val archive = LiveTimingArchive(token, userAgent)
-    private val client = OkHttpClient.Builder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(15, TimeUnit.SECONDS)
-        .build()
 
     // Everything received, guarded by `this`.
     private val tracks = mutableMapOf<String, TrackBuilder>()
     private val speeds = mutableMapOf<String, SpeedBuilder>()
     private val driverList = JSONObject()
-    private val timingLines = StringBuilder()
-    private val tyreLines = StringBuilder()
-    private val statusLines = StringBuilder()
-    private val controlLines = StringBuilder()
+    private val timingLines = StreamText()
+    private val tyreLines = StreamText()
+    private val statusLines = StreamText()
+    private val controlLines = StreamText()
+    /** The cars before connecting, from the archive: live timing only sends what happens from then on. */
+    private var pastTracks: Map<String, TrackBuilder> = emptyMap()
     private var streamStart: Long? = null
-    private var stateSeen = false
     private var sessionType = ""
     private var sessionName = ""
     /** The race's lap count (CurrentLap, TotalLaps); F1 sends it for races only. */
@@ -86,8 +84,8 @@ class LiveTimingFeed(
     private var tracedAt = 0L
     private var corners: List<Corner>? = null
     private var sectors: List<Corner> = emptyList()
-    private val trackStatusLines = StringBuilder()
-    private val clockLines = StringBuilder()
+    private val trackStatusLines = StreamText()
+    private val clockLines = StreamText()
     private var parts: List<Pair<Long, Int>> = emptyList()
     /** The track's offset from GMT ("02:00:00"), for restart times given in local time. */
     private var gmtOffset: String? = null
@@ -100,141 +98,58 @@ class LiveTimingFeed(
         private set
 
     /**
-     * Connects and keeps going until cancelled, reconnecting after a drop. [onTiming] gets each
-     * new picture of the session; [onStatus] a line for the map sheet (null when all is well).
+     * Follows the shared live connection until cancelled: first what it has kept of the session,
+     * then each change. [onTiming] gets each new picture of the session; [onStatus] a line for
+     * the map sheet (null when all is well). Ends with an error if live timing moves on to
+     * another session.
      */
-    suspend fun run(onTiming: (SessionTiming) -> Unit, onStatus: (String?) -> Unit) = coroutineScope {
-        launch {
-            while (true) {
-                delay(REFRESH_MS)
-                val timing = withContext(Dispatchers.Default) { snapshot() }
-                if (timing != null) {
-                    onTiming(timing)
-                    onStatus(null)
-                } else if (streamStart != null) {
-                    onStatus("Live map: waiting for the circuit…")
-                }
-                if (tracks.isEmpty() && streamStart != null) onStatus("Live timing is connected, but F1 isn't sending car positions")
+    suspend fun run(onTiming: (SessionTiming) -> Unit, onStatus: (String?) -> Unit): Nothing = coroutineScope {
+        val handle = LiveConnection.open(context, token, userAgent)
+        val moved = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val listener = object : LiveConnection.Listener {
+            override fun onMessage(message: LiveConnection.Message) =
+                receive(message.topic, message.data, message.utc, message.opening)
+            override fun onStatus(status: String?) = onStatus(status)
+            override fun onSessionChanged() {
+                moved.complete(Unit)
             }
         }
-        // The circuit's own outline and corners, so the track is up before any car has done a
-        // lap since connecting. A traced lap from an earlier session (with its finish line) wins.
-        if (corners == null) launch(Dispatchers.IO) {
-            val circuit = ref.circuitKey?.let { runCatching { archive.fetchCircuit(it, ref.year) }.getOrNull() }
-            corners = circuit?.corners.orEmpty()
-            sectors = circuit?.sectors.orEmpty()
-            circuit?.outline?.takeIf { it.size >= 8 }?.let { synchronized(this@LiveTimingFeed) { circuitOutline = it } }
-            Log.i(TAG, "circuit ${ref.circuitKey}: ${circuit?.outline?.size?.div(2)} outline points, ${corners?.size} corners")
-        }
-        while (true) {
-            try {
-                onStatus("Connecting to live timing…")
-                // Decoding positions several times a second stays off the main thread.
-                withContext(Dispatchers.Default) { connectOnce(onStatus) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                onStatus("Live timing dropped (${e.message}); reconnecting…")
-            }
-            delay(RECONNECT_MS)
-        }
-    }
-
-    /** One connection, until it closes. */
-    private suspend fun connectOnce(onStatus: (String?) -> Unit) {
-        val negotiated = withContext(Dispatchers.IO) { negotiate() }
-        val inbox = Channel<String>(Channel.UNLIMITED)
-        // The token goes in the URL too: browsers can't set headers on a WebSocket, so SignalR
-        // servers commonly read it from access_token there.
-        val request = Request.Builder()
-            .url("$HUB?id=${negotiated.first}&access_token=$token")
-            .header("Authorization", "Bearer $token")
-            .header("User-Agent", userAgent)
-            .apply { negotiated.second?.let { header("Cookie", it) } }
-            .build()
-        val socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send("""{"protocol":"json","version":1}""" + RS)
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                inbox.trySend(text)
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                inbox.close(IOException(response?.let { "HTTP ${it.code}" } ?: t.message ?: "connection failed"))
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                inbox.close(IOException("closed ($code)"))
-            }
-        })
         try {
-            var subscribed = false
-            for (frame in inbox) {
-                for (raw in frame.split(RS)) {
-                    if (raw.isBlank()) continue
-                    val message = JSONObject(raw)
-                    when (message.optInt("type", -1)) {
-                        // The handshake's reply is an empty object: now ask for the topics.
-                        -1 -> if (!subscribed) {
-                            subscribed = true
-                            val subscribe = JSONObject()
-                                .put("type", 1)
-                                .put("invocationId", "0")
-                                .put("target", "Subscribe")
-                                .put("arguments", JSONArray().put(JSONArray(TOPICS)))
-                            socket.send(subscribe.toString() + RS)
-                        }
-                        1 -> if (message.optString("target") == "feed") {
-                            val args = message.optJSONArray("arguments") ?: continue
-                            receive(args.optString(0), args.opt(1), parseUtc(args.optString(2)))
-                        }
-                        3 -> {
-                            message.optString("error").takeIf { it.isNotEmpty() }?.let { throw IOException(it) }
-                            val state = message.optJSONObject("result") ?: continue
-                            Log.i(TAG, "subscribed: " + state.keys().asSequence().joinToString())
-                            val now = System.currentTimeMillis()
-                            // The first state counts from the start of the stream: the picture is
-                            // behind the timing, and would otherwise show nothing until it caught up.
-                            val opening = !stateSeen
-                            stateSeen = true
-                            state.keys().forEach { topic -> receive(topic, state.opt(topic), now, opening) }
-                            // Read it at the next refresh, not whenever the next parse falls due.
-                            synchronized(this@LiveTimingFeed) { parsedAt = 0L }
-                            onStatus(null)
-                        }
-                        6 -> socket.send("""{"type":6}""" + RS)
-                        7 -> throw IOException(message.optString("error").ifEmpty { "the server closed the connection" })
+            launch {
+                while (true) {
+                    delay(REFRESH_MS)
+                    val timing = withContext(Dispatchers.Default) { snapshot() }
+                    if (timing != null) {
+                        onTiming(timing)
+                        onStatus(null)
+                    } else if (streamStart != null) {
+                        onStatus("Live map: waiting for the circuit…")
                     }
+                    if (tracks.isEmpty() && streamStart != null) onStatus("Live timing is connected, but F1 isn't sending car positions")
                 }
             }
+            launch(Dispatchers.IO) { backfill() }
+            // The circuit's own outline and corners, so the track is up before any car has done a
+            // lap since connecting. A traced lap from an earlier session (with its finish line) wins.
+            if (corners == null) launch(Dispatchers.IO) {
+                val circuit = ref.circuitKey?.let { runCatching { archive.fetchCircuit(it, ref.year) }.getOrNull() }
+                corners = circuit?.corners.orEmpty()
+                sectors = circuit?.sectors.orEmpty()
+                circuit?.outline?.takeIf { it.size >= 8 }?.let { synchronized(this@LiveTimingFeed) { circuitOutline = it } }
+                Log.i(TAG, "circuit ${ref.circuitKey}: ${circuit?.outline?.size?.div(2)} outline points, ${corners?.size} corners")
+            }
+            launch {
+                LiveConnection.listen(listener)
+                // Read it at the next refresh, not whenever the next parse falls due.
+                synchronized(this@LiveTimingFeed) { parsedAt = 0L }
+            }
+            moved.await()
+            throw IOException("live timing moved on to another session")
         } finally {
-            socket.cancel()
+            LiveConnection.unlisten(listener)
+            handle.close()
         }
     }
-
-    /** POST /negotiate: the connection token to open the socket with, and any sticky-session cookie. */
-    private fun negotiate(): Pair<String, String?> {
-        val request = Request.Builder()
-            .url("$HUB/negotiate?negotiateVersion=1")
-            .header("Authorization", "Bearer $token")
-            .header("User-Agent", userAgent)
-            .post(ByteArray(0).toRequestBody())
-            .build()
-        client.newCall(request).execute().use { response ->
-            if (response.code == 401 || response.code == 403) throw IOException("F1's live timing refused the login (HTTP ${response.code})")
-            if (!response.isSuccessful) throw IOException("negotiate HTTP ${response.code}")
-            val json = JSONObject(response.body?.string().orEmpty())
-            val id = json.optString("connectionToken").ifEmpty { json.optString("connectionId") }
-            if (id.isEmpty()) throw IOException("no connection token")
-            val cookies = response.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }.ifEmpty { null }
-            return id to cookies
-        }
-    }
-
-    private fun parseUtc(text: String): Long =
-        runCatching { Instant.parse(if (text.endsWith("Z")) text else text + "Z").toEpochMilli() }.getOrDefault(System.currentTimeMillis())
 
     /** One topic's change (or its state on subscribing). */
     @Synchronized
@@ -271,12 +186,70 @@ class LiveTimingFeed(
     }
 
     /** Adds a change as a jsonStream line ("HH:MM:SS.mmm" + JSON), the form the archive parsers read. */
-    private fun append(to: StringBuilder, start: Long, utc: Long, data: Any, opening: Boolean = false) {
+    private fun append(to: StreamText, start: Long, utc: Long, data: Any, opening: Boolean = false) {
         val offset = if (opening) 0L else (utc - start).coerceAtLeast(0)
-        val line = "%02d:%02d:%02d.%03d".format(offset / 3_600_000, offset / 60_000 % 60, offset / 1000 % 60, offset % 1000) +
-            data.toString() + '\n'
+        val line = streamLine(offset, data.toString())
         // Any changes that beat the state here came after it.
-        if (opening) to.insert(0, line) else to.append(line)
+        if (opening) to.opening.insert(0, line) else to.lines.append(line)
+    }
+
+    /**
+     * One topic as jsonStream text: the state on first subscribing (or, once the archive has
+     * been read, the session up to then) and the changes since.
+     */
+    private class StreamText {
+        val opening = StringBuilder()
+        val lines = StringBuilder()
+        var past: String? = null
+        override fun toString(): String = (past ?: opening.toString()) + lines
+    }
+
+    /**
+     * The session before connecting, from F1's archive, which it writes as the session goes.
+     * Without it, a picture from before then (started from the beginning, or wound back) had
+     * every car standing where it was first seen. Tried again while the archive lags behind.
+     */
+    private suspend fun backfill() {
+        repeat(BACKFILL_TRIES) {
+            val path = synchronized(this) { sessionPath }
+            val joined = synchronized(this) { streamStart }?.plus(HEAD_START_MS)
+            if (path.isEmpty() || joined == null) {
+                delay(1_000)
+                return@repeat
+            }
+            try {
+                val positions = archive.fetchStream(path + "Position.z.jsonStream")
+                val archiveStart = archive.streamStart(archive.fetchStream(path + "Heartbeat.jsonStream"), positions)
+                val cars = archive.parsePositions(positions)
+                fun past(file: String) = runCatching { rebaseStream(archive.fetchStream(path + file), archiveStart, joined - HEAD_START_MS, joined) }
+                    .onFailure { Log.w(TAG, "archive $file: ${it.message}") }.getOrNull()
+                val timing = past("TimingData.jsonStream")
+                val tyre = past("TimingAppData.jsonStream")
+                val status = past("SessionStatus.jsonStream")
+                val control = past("RaceControlMessages.jsonStream")
+                val trackStatus = past("TrackStatus.jsonStream")
+                val clock = past("ExtrapolatedClock.jsonStream")
+                val reaches = cars.values.maxOfOrNull { it.build().endMs } ?: 0L
+                synchronized(this) {
+                    pastTracks = cars
+                    timingLines.past = timing
+                    tyreLines.past = tyre
+                    statusLines.past = status
+                    controlLines.past = control
+                    trackStatusLines.past = trackStatus
+                    clockLines.past = clock
+                    parsedAt = 0L
+                }
+                Log.i(TAG, "archive backfill: ${cars.size} cars, reaching ${(joined - reaches) / 1000}s before connecting")
+                if (joined - reaches < BACKFILL_GAP_MS) return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Refused (403) until F1 publishes it, after the session.
+                Log.w(TAG, "archive backfill: ${e.message}")
+            }
+            delay(BACKFILL_RETRY_MS)
+        }
     }
 
     /** Partial updates fill in or change fields; nested objects merge the same way. */
@@ -301,7 +274,9 @@ class LiveTimingFeed(
             tyres = runCatching { TyreParser.parse(tyreLines.toString(), start) }.getOrDefault(tyres)
             parts = runCatching { archive.parseParts(text, start) }.getOrDefault(parts)
         }
-        val built = tracks.mapValues { it.value.build() }
+        val built = (tracks.keys + pastTracks.keys).associateWith { number ->
+            tracks[number]?.build(pastTracks[number]) ?: pastTracks.getValue(number).build()
+        }
         // No track from an earlier session: trace one from a lap driven since connecting.
         if (traced == null && now - tracedAt > TRACE_MS) {
             tracedAt = now
@@ -349,24 +324,28 @@ class LiveTimingFeed(
             totalLaps = totalLaps,
             clock = runCatching { SessionClock(archive.parseClock(clockLines.toString(), start), parts) }.getOrDefault(SessionClock.NONE),
             live = true,
-        ).also { timing -> timing.speeds = speeds.mapValues { it.value.build() } }
+        ).also { timing ->
+            timing.speeds = speeds.mapValues { it.value.build() }
+            timing.positionsFromUtc = built.values.filter { it.endMs > 0 }.minOfOrNull { it.startMs }
+        }
     }
 
     companion object {
         private const val TAG = "ApexviewLive"
-        private const val HUB = "https://livetiming.formula1.com/signalrcore"
-        private const val RS = "\u001e"
-        private val TOPICS = listOf(
-            "Heartbeat", "Position.z", "CarData.z", "TimingData", "DriverList", "SessionInfo", "SessionStatus", "RaceControlMessages",
-            "TeamRadio", "TimingAppData", "TrackStatus", "LapCount", "ExtrapolatedClock",
-        )
         private const val REFRESH_MS = 2_000L
-        /** How far before connecting the stream counts from: more than the picture can be behind. */
-        private const val HEAD_START_MS = 10 * 60_000L
+        /**
+         * How far before connecting the stream counts from: more than the picture can be behind,
+         * and room for the session so far from the archive.
+         */
+        internal const val HEAD_START_MS = 12 * 3_600_000L
+        // F1 publishes the archive once the session is over: keep asking for a few hours.
+        private const val BACKFILL_TRIES = 180
+        private const val BACKFILL_RETRY_MS = 120_000L
+        /** The archive is close enough to the live timing once it reaches this near. */
+        private const val BACKFILL_GAP_MS = 30_000L
         // Lap states and timing cards are re-read every 10 s: the picture runs far enough behind
         // the timing that they're never late.
         private const val PARSE_MS = 10_000L
         private const val TRACE_MS = 20_000L
-        private const val RECONNECT_MS = 5_000L
     }
 }

@@ -129,6 +129,7 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             Reminders.restore(context)
+            LiveRecording.restore(context)
             return
         }
         Reminders.show(

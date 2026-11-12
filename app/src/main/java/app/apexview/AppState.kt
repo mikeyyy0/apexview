@@ -958,12 +958,31 @@ class AppState(
     /** Sets reminders for every upcoming session the app knows the time of (the weekends loaded). */
     private fun syncReminders() {
         val now = System.currentTimeMillis()
-        val sessions = weekends.filter { !it.isDone(now) }.flatMap { w ->
+        // A session under way still wants recording; the weekend's end can come before the race does.
+        val sessions = weekends.filter { now < it.endMs + 86_400_000L }.flatMap { w ->
             weekendContent[w.meetingKey]?.sessions.orEmpty()
-                .filter { it.startMs > now }
+                .filter { it.startMs > 0 }
                 .map { Reminders.Session(it.contentId, w.name, it.title, it.startMs) }
         }
-        Reminders.sync(context, sessions)
+        Reminders.sync(context, sessions.filter { it.startMs > now })
+        LiveRecording.sync(context, sessions)
+    }
+
+    var recordingOn by mutableStateOf(LiveRecording.enabled(context))
+        private set
+    var recordingAll by mutableStateOf(LiveRecording.allSessions(context))
+        private set
+
+    fun chooseRecording(on: Boolean) {
+        recordingOn = on
+        LiveRecording.setEnabled(context, on)
+        syncReminders()
+    }
+
+    fun chooseRecordingAll(all: Boolean) {
+        recordingAll = all
+        LiveRecording.setAllSessions(context, all)
+        syncReminders()
     }
 
     /** The next Formula 1 session of the featured weekend that hasn't started, if any. */
@@ -1351,7 +1370,7 @@ class AppState(
     private suspend fun followLive(contentId: Long, ref: SessionRef, token: String) {
         val key = ref.circuitKey
         val known = key?.let { readOutline(it) }
-        val feed = LiveTimingFeed(token, userAgent, ref, known)
+        val feed = LiveTimingFeed(context, token, userAgent, ref, known)
         var kept = known != null
         try {
             feed.run(

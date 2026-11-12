@@ -185,6 +185,42 @@ class LiveTimingTest {
         }
     }
 
+    @Test
+    fun archiveLinesGoInFrontOfALiveSessionCountedFromItsStart() {
+        val archive = "\uFEFF00:00:01.000{\"a\":1}\n00:00:09.000{\"c\":3}\n1.00:00:02.000{\"b\":2}\n"
+        // The archive counts from 10 000; the live session from 5 000 and joined at 15 000.
+        val rebased = rebaseStream(archive, 10_000L, 5_000L, 15_000L)
+        assertEquals("00:00:06.000{\"a\":1}\n", rebased)
+        val dayLater = rebaseStream(archive, 10_000L, 5_000L, 10_000L + 86_400_000L + 5_000L)
+        assertEquals("00:00:06.000{\"a\":1}\n00:00:14.000{\"c\":3}\n24:00:07.000{\"b\":2}\n", dayLater)
+    }
+
+    @Test
+    fun aLiveCarsTrackStartsWithTheArchivesSamplesFromBeforeIt() {
+        val past = TrackBuilder().apply { add(1_000L, 1f, 1f); add(2_000L, 2f, 2f); add(3_000L, 3f, 3f) }
+        val live = TrackBuilder().apply { add(3_000L, 30f, 30f); add(4_000L, 40f, 40f) }
+        val track = live.build(past)
+        assertEquals(1_000L, track.startMs)
+        assertEquals(4_000L, track.endMs)
+        assertEquals(1.5f, track.at(1_500L)!!.first, 0.001f)
+        // The live sample wins where both have one.
+        assertEquals(30f, track.at(3_000L)!!.first, 0.001f)
+        assertEquals(3_000L, TrackBuilder().apply { add(3_000L, 0f, 0f) }.build(null).startMs)
+    }
+
+    @Test
+    fun aKeptLiveMessageReadsBackAsItWasReceived() {
+        val change = LiveConnection.parse("TimingData\t1700000000000\t0\t{\"Lines\":{}}")!!
+        assertEquals("TimingData", change.topic)
+        assertEquals(1_700_000_000_000L, change.utc)
+        assertTrue(change.data is org.json.JSONObject)
+        val state = LiveConnection.parse("Position.z\t5\t1\t\"abc=\"")!!
+        assertTrue(state.opening)
+        assertEquals("\"abc=\"", state.data)
+        assertNull(LiveConnection.parse("#session\t2026/x/"))
+        assertNull(LiveConnection.parse("broken"))
+    }
+
     private fun <T> assertNotNullAndGet(value: T?): T {
         assertNotNull(value)
         return value!!

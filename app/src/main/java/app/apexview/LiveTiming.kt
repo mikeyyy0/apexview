@@ -353,6 +353,15 @@ class SessionTiming(
      */
     var startLine: Float? = null
 
+    /**
+     * Live: the earliest moment there are car positions for, which is when Apexview joined live
+     * timing, unless it kept a recording from earlier or F1 has since published the archive.
+     */
+    var positionsFromUtc: Long? = null
+
+    /** Live, and the picture is from before there are positions: nothing to show the cars from. */
+    fun beforePositions(now: Long): Boolean = live && positionsFromUtc?.let { now < it - POSITIONS_SLACK_MS } == true
+
     val isRace get() = type.contains("Race", ignoreCase = true)
 
     /** The Grand Prix itself: Driver of the Day is voted on this one, not the sprint. */
@@ -404,6 +413,30 @@ class StateParse(val states: Map<String, StateLog>, val crossings: List<Pair<Str
 private val STREAM_PREFIX = Regex("""^\uFEFF?(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2})\.(\d{3})""")
 
 /** How many characters the prefix takes, so the payload starts there; the whole line if it has none. */
+/** A picture this close before the first positions still shows the cars where they first appear. */
+internal const val POSITIONS_SLACK_MS = 5_000L
+
+/** A jsonStream line: the offset from the stream's start as "HH:MM:SS.mmm", then the JSON. */
+internal fun streamLine(offsetMs: Long, json: String): String =
+    "%02d:%02d:%02d.%03d".format(offsetMs / 3_600_000, offsetMs / 60_000 % 60, offsetMs / 1000 % 60, offsetMs % 1000) + json + '\n'
+
+/**
+ * An archive stream's lines from before [untilUtc], re-counted from [newStart] instead of the
+ * archive's own start [archiveStart], to go in front of a live session's.
+ */
+internal fun rebaseStream(stream: String, archiveStart: Long, newStart: Long, untilUtc: Long): String {
+    val out = StringBuilder()
+    for (line in stream.lineSequence()) {
+        val prefix = streamPrefixLength(line)
+        if (line.length <= prefix) continue
+        val utc = archiveStart + streamOffsetMs(line)
+        if (utc >= untilUtc) break
+        if (utc < newStart) continue
+        out.append(streamLine(utc - newStart, line.substring(prefix)))
+    }
+    return out.toString()
+}
+
 internal fun streamPrefixLength(line: String): Int = STREAM_PREFIX.find(line)?.range?.last?.plus(1) ?: line.length
 
 /** The line's offset from the stream's start, in ms. */
@@ -426,8 +459,7 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         // The heartbeat ties the streams' offsets to the clock. The 2026 Mexico race's put them
         // 33 hours late, leaving the laps a day and a half away from the cars; where the cars'
         // own timestamps disagree with it by more than a minute, they're the ones to trust.
-        val heartbeat = parseStreamStart(fetch(path + "Heartbeat.jsonStream"))
-        val streamStart = positionsStreamStart(positions)?.takeIf { abs(it - heartbeat) > STREAM_START_SLACK_MS } ?: heartbeat
+        val streamStart = streamStart(fetch(path + "Heartbeat.jsonStream"), positions)
         val timingStream = runCatching { fetch(path + "TimingData.jsonStream") }.getOrNull()
         val parsed = timingStream?.let { runCatching { parseStates(it, streamStart) }.getOrNull() }
             ?: StateParse(emptyMap(), emptyList())
@@ -1039,6 +1071,14 @@ class LiveTimingArchive(private val token: String, private val userAgent: String
         return best ?: FloatArray(0)
     }
 
+    /** When a session's streams count from: the heartbeat's clock, unless the cars' own times disagree. */
+    internal fun streamStart(heartbeatStream: String, positions: String): Long {
+        val heartbeat = parseStreamStart(heartbeatStream)
+        return positionsStreamStart(positions)?.takeIf { abs(it - heartbeat) > STREAM_START_SLACK_MS } ?: heartbeat
+    }
+
+    internal fun fetchStream(path: String): String = fetch(path)
+
     private fun fetch(path: String): String =
         open(path).use { it.readBytes() }.toString(Charsets.UTF_8).removePrefix("﻿")
 
@@ -1129,6 +1169,26 @@ class TrackBuilder {
     }
 
     fun build() = DriverTrack(t, x, y, size)
+
+    /** As [build], with [earlier]'s samples from before these in front: the archive's part of a live session. */
+    fun build(earlier: TrackBuilder?): DriverTrack {
+        if (earlier == null) return build()
+        val first = if (size > 0) t[0] else Long.MAX_VALUE
+        var k = 0
+        while (k < earlier.size && earlier.t[k] < first) k++
+        if (k == 0) return build()
+        val n = k + size
+        val nt = LongArray(n)
+        val nx = FloatArray(n)
+        val ny = FloatArray(n)
+        System.arraycopy(earlier.t, 0, nt, 0, k)
+        System.arraycopy(earlier.x, 0, nx, 0, k)
+        System.arraycopy(earlier.y, 0, ny, 0, k)
+        System.arraycopy(t, 0, nt, k, size)
+        System.arraycopy(x, 0, nx, k, size)
+        System.arraycopy(y, 0, ny, k, size)
+        return DriverTrack(nt, nx, ny, n)
+    }
 
     /** The points of one lap starting at [start] and its duration, or null if it doesn't close. */
     fun loopFrom(start: Int): Pair<FloatArray, Long>? {

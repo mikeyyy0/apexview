@@ -162,7 +162,7 @@ internal fun rememberMapTime(app: AppState): Long {
 }
 
 /** Every car on track at [now]; one out of the race (retired, or stopped) is left off every map. */
-internal fun carsAt(timing: SessionTiming, now: Long) = timing.tracks.mapNotNull { (number, track) ->
+internal fun carsAt(timing: SessionTiming, now: Long) = if (timing.beforePositions(now)) emptyList() else timing.tracks.mapNotNull { (number, track) ->
     if (timing.laps[number]?.retiredAt(now) == true) return@mapNotNull null
     track.atOrFirst(now)?.let { (x, y) -> Car(number, x, y, timing.states[number]?.at(now) ?: LapState.UNKNOWN) }
 }
@@ -396,7 +396,7 @@ private fun TrackDrawing(app: AppState, timing: SessionTiming, width: Float, hei
     val cars = carsAt(timing, now).map { it to fit.map(it.x, it.y) }
     val stop = pitStopNow(rememberPitBasis(app, timing, now), app.pitDriver, cars.map { (car, _) -> car.number to timing.geometry.progress(car.x, car.y) })
     val pitLabel = remember { measurer.label("PIT", 8.sp) }
-    val stopLine = stop?.let { pitStopLine(timing, it) }
+    val stopLine = stop?.let { pitStopLine(timing, it) } ?: noPositionsLine(timing, now)
     val stopText = remember(stopLine) { stopLine?.let { measurer.label(it, 13.sp) } }
     val flags = timing.flags.at(now)
     val caption = rememberCaption(measurer, flags, now)
@@ -679,7 +679,7 @@ fun EdgeMap(app: AppState, timing: SessionTiming, width: Float, height: Float, i
         ?.let { it + SAFETY_CAR_AHEAD }
     val stop = pitStopNow(rememberPitBasis(app, timing, now), app.pitDriver, cars.map { (car, f) -> car.number to f })
     val pitLabel = remember { measurer.label("PIT", 7.sp) }
-    val stopLine = stop?.let { pitStopLine(timing, it) }
+    val stopLine = stop?.let { pitStopLine(timing, it) } ?: noPositionsLine(timing, now)
     val stopText = remember(stopLine) { stopLine?.let { measurer.label(it, 13.sp) } }
 
     Canvas(Modifier.fillMaxSize().graphicsLayer(alpha = app.mapOpacity)) {
@@ -769,6 +769,16 @@ internal fun DrawScope.drawPitStop(stop: PitStopNow, color: Color, label: TextLa
 }
 
 /** "If HAM stops now, out 2.1 s behind NOR": the line under a map while a car is held. */
+/**
+ * Live, before the first car positions: F1's live timing only sends what happens from the moment
+ * Apexview joins, and F1 publishes the earlier part once the session is over.
+ */
+internal fun noPositionsLine(timing: SessionTiming, now: Long): String? {
+    if (!timing.beforePositions(now)) return null
+    val minutes = ((timing.positionsFromUtc!! - now) / 60_000L).coerceAtLeast(1)
+    return "No car positions for the next $minutes min, until Apexview joined live timing"
+}
+
 internal fun pitStopLine(timing: SessionTiming, stop: PitStopNow): String {
     fun tla(number: String) = timing.drivers[number]?.tla ?: number
     return "If ${tla(stop.number)} stops now" + (stop.outBehind?.let { (n, ms) -> ", out %.1f s behind %s".format(ms / 1000f, tla(n)) } ?: "")
