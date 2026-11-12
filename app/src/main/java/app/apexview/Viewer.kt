@@ -858,7 +858,15 @@ private fun TileView(app: AppState, tile: Tile) {
             )
         }
 
-        if (tile.feed.problem == null && !tile.coolingOff) {
+        if (tile.heldForSpeed) {
+            Text(
+                "Picture paused while sped up. Back to 1× brings it back.",
+                style = Type.subhead.copy(color = Ink.primary, shadow = overlayShadow, textAlign = androidx.compose.ui.text.style.TextAlign.Center),
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp).widthIn(max = 420.dp),
+            )
+        }
+
+        if (tile.feed.problem == null && !tile.coolingOff && !tile.heldForSpeed) {
             BufferingRing(tile.feed, Modifier.align(Alignment.Center))
         }
 

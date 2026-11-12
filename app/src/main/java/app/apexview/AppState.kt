@@ -41,6 +41,8 @@ class Tile(val id: Int, val contentId: Long, channel: Channel, feed: FeedPlayer)
     var pinned by mutableStateOf(false)
     /** Showing, but its picture paused while the phone is too hot (sound and place kept). */
     var coolingOff by mutableStateOf(false)
+    /** Showing, but its picture paused while sped up, on a phone that can't keep every feed smooth. */
+    var heldForSpeed by mutableStateOf(false)
     /** When this tile last took a car picked on the map (or was added). Oldest goes first. */
     var mapPickedAt = System.currentTimeMillis()
 
@@ -312,7 +314,15 @@ class AppState(
      * its limit shows video in the main feed only.
      */
     fun applyVideoBudget() {
-        if (tiles.isEmpty()) return
+        if (tiles.isEmpty()) {
+            speedHeld = false
+            return
+        }
+        // A speed this phone already struggled with, with this many feeds: straight to one picture.
+        if (!speedHeld && playbackSpeed > 1f && tiles.size > 1 && (struggledAt[tiles.size] ?: Float.MAX_VALUE) <= playbackSpeed) {
+            speedHeld = true
+            message = "Only the main feed's picture plays at ${speedLabel(playbackSpeed)} on this phone, to keep it smooth. Back to 1× brings the rest back."
+        }
         val shown = if (inPip) pipTile() else null
         val main = tiles.firstOrNull { it.id == bigTileId } ?: tiles.firstOrNull { it.audible } ?: tiles.maxByOrNull { it.w }
         val scale = when {
@@ -331,14 +341,17 @@ class AppState(
             // Laptop mode: the feed that was up top last keeps its picture going out of sight, so
             // going back to it is instant rather than a fresh ~4 MB chunk. Not once the phone is warm.
             val warm = !visible && !browsing && !inPip && laptopActive && tile.id == previousTopId &&
-                thermal < android.os.PowerManager.THERMAL_STATUS_MODERATE
+                thermal < android.os.PowerManager.THERMAL_STATUS_MODERATE && !speedHeld
             if (warm) {
                 tile.coolingOff = false
                 tile.feed.keepVideo()
                 return@forEach
             }
-            val cooling = thermal >= android.os.PowerManager.THERMAL_STATUS_CRITICAL && tile !== main
-            tile.coolingOff = visible && cooling
+            val hot = thermal >= android.os.PowerManager.THERMAL_STATUS_CRITICAL && tile !== main
+            val held = speedHeld && !inPip && tile !== main
+            tile.coolingOff = visible && hot
+            tile.heldForSpeed = visible && held && !hot
+            val cooling = hot || held
             // The pop-out stays on the rendition it has, ready for coming back.
             if (inPip && visible && !cooling) {
                 tile.feed.keepVideo()
@@ -2606,11 +2619,79 @@ class AppState(
     var speedSheetOpen by mutableStateOf(false)
 
     fun chooseSpeed(value: Float) {
+        val slower = value < playbackSpeed
         playbackSpeed = value
         prefs.edit().putFloat(PREF_SPEED, value).apply()
         tiles.forEach { it.feed.setBaseSpeed(value) }
         radioPlayer?.setPlaybackSpeed(value)
+        // Slower might be fine with every picture: try it (unless this phone already couldn't).
+        if (slower && speedHeld) {
+            speedHeld = false
+            if (value <= 1f) message = null
+        }
+        resetStrain()
+        applyVideoBudget()
         showChrome()
+    }
+
+    /**
+     * Sped up, only the main feed shows its picture: set when this phone couldn't keep every
+     * feed smooth at this speed. The others keep their sound and their place, so their pictures
+     * come back in step.
+     */
+    var speedHeld by mutableStateOf(false)
+        private set
+
+    /** The slowest speed each number of feeds has struggled at, while the app's been running. */
+    private val struggledAt = mutableMapOf<Int, Float>()
+    /** Frames dropped across the feeds in each of the last few seconds. */
+    private val dropsBySecond = ArrayDeque<Int>()
+    private var lastDropTotal = -1
+    private var strainTicks = 0
+    private var steadyFeeds: List<FeedPlayer> = emptyList()
+    private var steadySinceMs = 0L
+
+    private fun resetStrain() {
+        dropsBySecond.clear()
+        lastDropTotal = -1
+    }
+
+    /**
+     * Sped up with several pictures, whether the phone keeps up: if it keeps dropping frames,
+     * only the main feed's picture plays from then on. Some phones and TVs manage every feed at
+     * double speed, others don't; what counts is how this one does.
+     */
+    private fun watchStrain() {
+        val pictures = tiles.filter { it.feed.showingVideo }
+        if (playbackSpeed <= 1f || speedHeld || pictures.size < 2) {
+            resetStrain()
+            return
+        }
+        // Feeds starting, buffering or catching up drop frames anyway: only a steady few
+        // seconds of the same feeds playing count.
+        val now = System.currentTimeMillis()
+        val feeds = pictures.map { it.feed }
+        if (feeds != steadyFeeds || pictures.any { it.feed.player.playbackState != Player.STATE_READY || !it.feed.player.isPlaying }) {
+            steadyFeeds = feeds
+            steadySinceMs = now
+            resetStrain()
+            return
+        }
+        if (now - steadySinceMs < STEADY_MS) return
+        if (++strainTicks % 2 != 0) return
+        val total = pictures.sumOf { it.feed.player.videoDecoderCounters?.droppedBufferCount ?: 0 }
+        val last = lastDropTotal
+        lastDropTotal = total
+        if (last < 0) return
+        dropsBySecond.addLast((total - last).coerceAtLeast(0))
+        if (dropsBySecond.size > STRAIN_WINDOW_S) dropsBySecond.removeFirst()
+        if (dropsBySecond.count { it >= STRAIN_DROPS } < STRAIN_SECONDS) return
+        struggledAt[tiles.size] = minOf(struggledAt[tiles.size] ?: Float.MAX_VALUE, playbackSpeed)
+        speedHeld = true
+        resetStrain()
+        applyVideoBudget()
+        message = "This phone can't keep ${tiles.size} feeds smooth at ${speedLabel(playbackSpeed)}, so only the main " +
+            "feed's picture plays while sped up. Back to 1× brings the rest back."
     }
 
     fun skip(deltaMs: Long) {
@@ -2657,6 +2738,7 @@ class AppState(
         }
         // Twice a second, so every 10th tick is a save every 5 s.
         if (++saveTicks % 10 == 0) saveWatch()
+        watchStrain()
 
         val leaderClock = leader.wallClockMs()
         tiles.drop(1).forEach { tile ->
@@ -2706,6 +2788,13 @@ class AppState(
         private const val SEEK_DRIFT_MS = 2000L
         private const val NUDGE_DRIFT_MS = 150L
         private const val NUDGE = 0.1f
+        /** Frames dropped across the feeds in a second that counts as struggling... */
+        private const val STRAIN_DROPS = 8
+        /** ...in this many of the last [STRAIN_WINDOW_S] seconds. */
+        private const val STRAIN_SECONDS = 3
+        private const val STRAIN_WINDOW_S = 5
+        /** How long the same feeds have to have been playing before dropped frames count. */
+        private const val STEADY_MS = 10_000L
         const val MAX_FEEDS = 4
         private const val MAX_RECENTS = 4
         /** F1 TV's race weekends start with 2018; before that, a season is a set of videos. */

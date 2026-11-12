@@ -119,7 +119,7 @@ class FeedPlayer(
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS, DefaultLoadControl.DEFAULT_MAX_BUFFER_MS, 1_000, 2_000)
             .build()
-        player = ExoPlayer.Builder(context)
+        player = ExoPlayer.Builder(context, ThinningRenderersFactory(context))
             .setMediaSourceFactory(sources)
             .setLoadControl(loadControl)
             .setTrackSelector(androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context, TileFitSelectionFactory(fit)))
