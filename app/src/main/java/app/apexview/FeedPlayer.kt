@@ -263,11 +263,23 @@ class FeedPlayer(
         player.volume = if (audible) 1f else 0f
     }
 
-    /** Small speed changes let a follower catch up without a visible jump. */
+    /** The speed chosen for watching (1 is normal); the sync's nudges go on top of it. */
+    private var baseSpeed = 1f
+
+    fun setBaseSpeed(value: Float) {
+        if (value == baseSpeed) return
+        baseSpeed = value
+        player.setPlaybackSpeed(baseSpeed * speed)
+    }
+
+    /**
+     * Small speed changes let a follower catch up without a visible jump. A share of the chosen
+     * speed, so feeds sped up together still line up the same way.
+     */
     fun setSpeed(value: Float) {
         if (value == speed) return
         speed = value
-        player.setPlaybackSpeed(value)
+        player.setPlaybackSpeed(baseSpeed * value)
     }
 
     /**

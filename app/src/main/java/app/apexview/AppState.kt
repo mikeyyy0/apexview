@@ -1234,7 +1234,9 @@ class AppState(
         }
     }
 
-    private fun newFeed(stream: PlayInfo, startMs: Long = C.TIME_UNSET) = FeedPlayer(
+    private fun newFeed(stream: PlayInfo, startMs: Long = C.TIME_UNSET) = makeFeed(stream, startMs).also { it.setBaseSpeed(playbackSpeed) }
+
+    private fun makeFeed(stream: PlayInfo, startMs: Long) = FeedPlayer(
         context, stream,
         ascendon = api.ascendon.orEmpty(),
         entitlement = api.entitlement.orEmpty(),
@@ -1917,6 +1919,7 @@ class AppState(
         val base = timing?.radioBase ?: return
         val player = radioPlayer ?: androidx.media3.exoplayer.ExoPlayer.Builder(context).build().also { p ->
             radioPlayer = p
+            p.setPlaybackSpeed(playbackSpeed)
             p.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (state == Player.STATE_ENDED) stopRadio()
@@ -2594,6 +2597,22 @@ class AppState(
     }
 
     /** From the player itself, not positionMs: in the pop-out the sync loop that updates it isn't running. */
+    /**
+     * How fast every feed plays, 1 being normal: they all change together, so they stay in
+     * step. Kept for the next video too.
+     */
+    var playbackSpeed by mutableStateOf(prefs.getFloat(PREF_SPEED, 1f).takeIf { it in SPEEDS } ?: 1f)
+        private set
+    var speedSheetOpen by mutableStateOf(false)
+
+    fun chooseSpeed(value: Float) {
+        playbackSpeed = value
+        prefs.edit().putFloat(PREF_SPEED, value).apply()
+        tiles.forEach { it.feed.setBaseSpeed(value) }
+        radioPlayer?.setPlaybackSpeed(value)
+        showChrome()
+    }
+
     fun skip(deltaMs: Long) {
         val leader = leaderTile() ?: return
         seekTo(leader.feed.player.currentPosition + deltaMs)
@@ -2631,6 +2650,11 @@ class AppState(
         durationMs = leader.player.duration.takeIf { it > 0 } ?: 0L
         isLive = leader.player.isCurrentMediaItemLive
         if (leader.player.playbackState != Player.STATE_READY) return
+        // Faster than real time runs into the live edge, where there's nothing more to play.
+        if (isLive && playbackSpeed > 1f && durationMs > 0 && durationMs - positionMs < LIVE_EDGE_MS) {
+            chooseSpeed(1f)
+            message = "Caught up to live, so back to normal speed."
+        }
         // Twice a second, so every 10th tick is a save every 5 s.
         if (++saveTicks % 10 == 0) saveWatch()
 
@@ -2695,6 +2719,11 @@ class AppState(
         private const val PREF_RADIO_SPOT = "radioSpot"
         private const val PREF_TOWER = "towerOpen"
         private const val PREF_TOWER_SPOT = "towerSpot"
+        private const val PREF_SPEED = "playbackSpeed"
+        /** The playback speeds on offer. */
+        val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+        /** This close to the live edge counts as live: speeding up would only run into it. */
+        private const val LIVE_EDGE_MS = 30_000L
         /** Clips this far ahead of the picture get transcribed early, so they're ready on time. */
         private const val TRANSCRIBE_AHEAD_MS = 120_000L
         const val NO_WORDS = "(no words recognised)"

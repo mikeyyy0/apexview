@@ -89,6 +89,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -427,6 +430,7 @@ fun ViewerScreen(app: AppState) {
     app.tileMenu?.let { TileMenuSheet(app, it) }
     if (app.mapSheetOpen) MapSheet(app)
     if (app.layoutSheetOpen) LayoutSheet(app)
+    if (app.speedSheetOpen) SpeedSheet(app)
     LaptopPrompt(app)
 }
 
@@ -628,7 +632,16 @@ private fun BottomChrome(app: AppState, cutout: Clearance) {
             } else {
                 Text("−" + clock((duration - shown).coerceAtLeast(0)), style = Type.footnote.copy(color = Ink.primary))
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(4.dp))
+            // The speed, always shown; bright when it isn't normal.
+            Text(
+                speedLabel(app.playbackSpeed),
+                style = Type.footnote.copy(color = if (app.playbackSpeed == 1f) Ink.secondary else Ink.primary, fontWeight = if (app.playbackSpeed == 1f) null else FontWeight.SemiBold),
+                modifier = Modifier
+                    .semantics { contentDescription = "Playback speed ${speedLabel(app.playbackSpeed)}" }
+                    .pressable { app.speedSheetOpen = true; app.showChrome() }
+                    .padding(8.dp),
+            )
             Glyph(if (app.mutedAll) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, if (app.mutedAll) "Unmute" else "Mute all", modifier = Modifier.helpAnchor(app, "mute"), onClick = app::toggleMuteAll)
         }
     }
@@ -1109,6 +1122,55 @@ private fun <T> Segments(options: List<T>, chosen: T, label: (T) -> String, modi
                 contentAlignment = Alignment.Center,
             ) {
                 Text(label(option), style = Type.subhead.copy(color = if (on) Ink.primary else Ink.secondary))
+            }
+        }
+    }
+}
+
+/** "1×", "1.25×", "0.5×". */
+internal fun speedLabel(speed: Float): String =
+    (if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString().trimEnd('0')) + "×"
+
+/** Playback speed for every feed at once, from half to double. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SpeedSheet(app: AppState) {
+    ModalBottomSheet(
+        onDismissRequest = { app.speedSheetOpen = false },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Ink.surface,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+    ) {
+        KeepSystemBarsHidden()
+        val current = remember { FocusRequester() }
+        LaunchedEffect(Unit) { runCatching { current.requestFocus() } }
+        Column(Modifier.navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            Text("Playback speed", style = Type.title2)
+            Row(Modifier.padding(top = 20.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink.background).padding(3.dp)) {
+                AppState.SPEEDS.forEach { speed ->
+                    val on = speed == app.playbackSpeed
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .then(if (on) Modifier.focusRequester(current) else Modifier)
+                            .pressable { app.chooseSpeed(speed) }
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(if (on) Ink.surfaceHigh else Color.Transparent)
+                            .padding(vertical = 9.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(speedLabel(speed), style = Type.subhead.copy(color = if (on) Ink.primary else Ink.secondary), maxLines = 1)
+                    }
+                }
+            }
+            Text(
+                if (app.tiles.size > 1) "Every feed plays at this speed together, so they stay in step. Your choice is kept for the next video."
+                else "Your choice is kept for the next video.",
+                style = Type.footnote,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+            if (app.playbackSpeed != 1f) Row(Modifier.padding(top = 16.dp)) {
+                SecondaryButton("Back to normal speed") { app.chooseSpeed(1f); app.speedSheetOpen = false }
             }
         }
     }
